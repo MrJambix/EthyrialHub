@@ -1,9 +1,13 @@
 """
-Auto-Loot v4 — Detects kills, opens corpse, loots all
+Auto-Loot v4 — Standalone with keyboard corpse opener
+Polls for kills, presses interact to open corpse, then loots all.
 """
-from ethytool_wraps import *
+import time
 import ctypes
 import ctypes.wintypes
+import ethytool_wraps
+ethytool_wraps.conn = conn
+from ethytool_wraps import *
 
 # ════════════════════════════════════════════════════════════
 #  CONFIG
@@ -57,7 +61,7 @@ def press_key(scan):
     up.union.ki.dwExtraInfo = None
 
     user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
-    sleep(0.05)
+    time.sleep(0.05)
     user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
 
 def focus_game():
@@ -76,41 +80,85 @@ def focus_game():
     user32.EnumWindows(WNDENUMPROC(check), 0)
     if result[0]:
         user32.SetForegroundWindow(result[0])
-        sleep(0.1)
+        time.sleep(0.1)
     return result[0] is not None
 
+def should_stop():
+    try:
+        return stop_event.is_set()
+    except NameError:
+        return False
+
+def try_loot():
+    """Attempt to loot. Returns number of items looted, or 0."""
+    ok = loot()
+    return 1 if ok else 0
+
 # ════════════════════════════════════════════════════════════
-#  MAIN
+#  MAIN LOOP
 # ════════════════════════════════════════════════════════════
 
 print()
-print("AUTO-LOOT v4")
-print(f"Interact scancode: 0x{INTERACT_SCANCODE:02X}")
+print("+" + "-" * 53 + "+")
+print("|  AUTO-LOOT v4 — Standalone                         |")
+print("|  Detects kills -> interact -> loot all              |")
+print(f"|  Interact key scancode: 0x{INTERACT_SCANCODE:02X}                        |")
+print("+" + "-" * 53 + "+")
 print()
 
 had_target = False
-looted = 0
+total_looted = 0
+loot_events = 0
 
-while True:
-    if has_target():
-        had_target = True
+try:
+    while not should_stop():
+        tgt = has_target()
 
-    if had_target and not has_target():
-        had_target = False
-        sleep(0.6)
+        if tgt:
+            had_target = True
 
-        if focus_game():
-            press_key(INTERACT_SCANCODE)
-            sleep(0.5)
+        # Target just died — we had one, now it's gone
+        if had_target and not tgt:
+            had_target = False
 
-            if not loot():
-                sleep(0.4)
-                loot()
+            print("  Kill detected, opening corpse...")
+            sleep(0.6)
 
-            looted += 1
-            print(f"  Looted #{looted}")
+            if focus_game():
+                press_key(INTERACT_SCANCODE)
+                sleep(0.5)
 
-    if has_loot():
-        loot()
+                if try_loot():
+                    loot_events += 1
+                    total_looted += 1
+                    print(f"  [{loot_events}] LOOTED  Total: {total_looted}")
+                else:
+                    # Retry once — window may have been slow
+                    sleep(0.4)
+                    if try_loot():
+                        loot_events += 1
+                        total_looted += 1
+                        print(f"  [{loot_events}] LOOTED (retry)  Total: {total_looted}")
+                    else:
+                        print("  Loot failed — no window open?")
+            else:
+                print("  Could not focus game window")
 
-    sleep(POLL_RATE)
+            print()
+
+        # Also check for open loot windows (from manual clicks etc)
+        if has_loot():
+            if try_loot():
+                loot_events += 1
+                total_looted += 1
+                print(f"  [{loot_events}] Passive loot  Total: {total_looted}")
+
+        sleep(POLL_RATE)
+
+except KeyboardInterrupt:
+    pass
+
+print()
+print("+" + "-" * 53 + "+")
+print(f"|  Stopped.  {loot_events} events, {total_looted} looted".ljust(54) + "|")
+print("+" + "-" * 53 + "+")
