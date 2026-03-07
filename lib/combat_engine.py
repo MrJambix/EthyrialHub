@@ -1,32 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════════╗
-║                    EthyTool Combat Engine v3.0                       ║
-║                                                                      ║
-║  100% GENERIC — all class logic lives in profile .py files.          ║
-║                                                                      ║
-║  Supports:                                                           ║
-║    • Stack/resource tracking (configurable per class)                ║
-║    • Buff duration tracking + safety warnings                        ║
-║    • Defensive combos (e.g. Undying Fury → Staggering Shout)        ║
-║    • Spender gating (min_stacks from SPELL_INFO)                    ║
-║    • AoE detection + priority swap                                   ║
-║    • Pull opener sequence                                            ║
-║    • Gap closer logic                                                ║
-║    • Kiting mode                                                     ║
-║    • Auto-rest between fights                                        ║
-║    • Full session stats                                              ║
-║                                                                      ║
-║  All class behavior comes from:                                      ║
-║    scripts/builds/<classname>.py                                     ║
-║                                                                      ║
-║  Usage:                                                              ║
-║    engine = CombatEngine(conn, "berserker")                          ║
-║    engine = CombatEngine(conn, "cleric")                             ║
-║    engine = CombatEngine(conn, "ranger")                             ║
-║    engine.run()                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
-"""
-
 import time
 import math
 import threading
@@ -49,56 +20,6 @@ class CombatState(Enum):
     KITING = auto()
     RESTING = auto()
     DEAD = auto()
-
-
-# ══════════════════════════════════════════════════════════════
-#  Stack Tracker — Generic resource system
-# ══════════════════════════════════════════════════════════════
-
-class StackTracker:
-    """
-    Estimates resource stacks from cast history.
-    Works for any stack-based class (fury, combo points, etc).
-    """
-
-    def __init__(self, max_stacks=20, decay_time=8.0):
-        self.max_stacks = max_stacks
-        self.decay_time = decay_time
-        self.stacks = 0
-        self._last_combat = time.time()
-
-    def gain(self, amount=1):
-        self.stacks = min(self.max_stacks, self.stacks + amount)
-        self._last_combat = time.time()
-
-    def spend(self, amount):
-        """Spend stacks. -1 = all."""
-        if amount == -1:
-            spent = self.stacks
-            self.stacks = 0
-            return spent
-        spent = min(self.stacks, amount)
-        self.stacks = max(0, self.stacks - amount)
-        return spent
-
-    def update(self, in_combat):
-        if in_combat:
-            self._last_combat = time.time()
-        elif self.stacks > 0:
-            if time.time() - self._last_combat > self.decay_time:
-                self.stacks = max(0, self.stacks - 1)
-                self._last_combat = time.time()
-
-    def has(self, amount):
-        return self.stacks >= amount
-
-    @property
-    def full(self):
-        return self.stacks >= self.max_stacks
-
-    @property
-    def pct(self):
-        return (self.stacks / self.max_stacks * 100) if self.max_stacks > 0 else 0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -213,6 +134,9 @@ class CombatProfile:
         self.tick_rate = 0.3
         self.gcd = 0.5
 
+        # Ignored spells (from profile)
+        self.ignored_spells = set()
+
     @staticmethod
     def load(name):
         p = CombatProfile()
@@ -224,7 +148,6 @@ class CombatProfile:
                 m = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(m)
 
-                # Load everything the profile defines
                 p.rotation = getattr(m, "ROTATION", [])
                 p.buffs = getattr(m, "BUFFS", [])
                 p.rebuff_interval = getattr(m, "REBUFF_INTERVAL", 55.0)
@@ -252,17 +175,22 @@ class CombatProfile:
                 p.buff_safety = getattr(m, "BUFF_SAFETY", {})
                 p.tick_rate = getattr(m, "TICK_RATE", 0.3)
                 p.gcd = getattr(m, "GCD", 0.5)
+                p.ignored_spells = getattr(m, "IGNORED_SPELLS", set())
                 break
 
         return p
 
     def get_spell(self, name):
-        """Get SPELL_INFO for a spell, or empty dict."""
         return self.spell_info.get(name, {})
 
 
 # ══════════════════════════════════════════════════════════════
-#  Combat Engine v3.0 — FULLY GENERIC
+#  Combat Engine v3.1 — FULLY GENERIC
+#  Now delegates casting to conn.try_cast() which handles:
+#    - IGNORED_SPELLS (global + profile)
+#    - Stack rules / HP rules
+#    - GCD tracking
+#    - Cast time waits
 # ══════════════════════════════════════════════════════════════
 
 class CombatEngine:
@@ -280,22 +208,15 @@ class CombatEngine:
         # Systems
         self.stats = SpellStats()
         self.buffs = BuffTracker()
-        self.stacks = None
-        if self.profile.stack_enabled:
-            self.stacks = StackTracker(
-                max_stacks=self.profile.max_stacks,
-                decay_time=self.profile.stack_decay_time,
-            )
 
         # State
         self.state = CombatState.IDLE
         self._state_time = time.time()
-        self._last_gcd = 0
         self._pull_count = 0
         self._kill_count = 0
         self._deaths = 0
         self._session_start = 0
-        self._defensive_active = {}  # spell_name -> pop_time
+        self._defensive_active = {}
 
         # Toggles
         self.auto_rest = True
@@ -305,8 +226,11 @@ class CombatEngine:
         self.log_casts = True
         self.log_states = True
 
-        # Available spells (checked at start)
+        # Available spells (checked at start, minus ignored)
         self._available = set()
+
+        # Build combined ignored set
+        self._ignored = set()
 
     # ══════════════════════════════════════
     #  Run
@@ -334,10 +258,20 @@ class CombatEngine:
         self.stop_event.set()
 
     # ══════════════════════════════════════
-    #  Init — Check available spells
+    #  Init — Check available spells, build ignored set
     # ══════════════════════════════════════
 
     def _init(self):
+        # Build combined ignored set from ethytool_lib + profile
+        try:
+            from ethytool_lib import IGNORED_SPELLS as LIB_IGNORED
+            self._ignored = set(LIB_IGNORED)
+        except ImportError:
+            self._ignored = set()
+
+        # Add profile-specific ignores
+        self._ignored.update(self.profile.ignored_spells)
+
         known = self.conn.get_spell_set()
         all_spells = set()
 
@@ -348,17 +282,25 @@ class CombatEngine:
                     self.profile.defensive_combo]:
             all_spells.update(lst)
 
+        # Also add rest/meditation spells
+        all_spells.add(self.profile.rest_spell)
+        all_spells.add(self.profile.meditation_spell)
+
         for spell in all_spells:
+            if spell in self._ignored:
+                continue
             if spell in known or spell.lower() in known:
                 self._available.add(spell)
             else:
                 self.log(f"[WARN] Missing spell: {spell}")
 
+        ignored_count = len(all_spells & self._ignored)
         self.log(f"")
-        self.log(f"  ═══ {self.profile_name.upper()} COMBAT ENGINE ═══")
-        self.log(f"  Spells: {len(self._available)}/{len(all_spells)}")
-        self.log(f"  Rotation: {self.profile.rotation}")
-        self.log(f"  Stacks: {'ON (max ' + str(self.profile.max_stacks) + ')' if self.stacks else 'OFF'}")
+        self.log(f"  ═══ {self.profile_name.upper()} COMBAT ENGINE v3.1 ═══")
+        self.log(f"  Spells: {len(self._available)}/{len(all_spells)} ({ignored_count} ignored)")
+        self.log(f"  Rotation: {[s for s in self.profile.rotation if s not in self._ignored]}")
+        self.log(f"  Ignored: {sorted(self._ignored & all_spells) if ignored_count else 'none'}")
+        self.log(f"  Stacks: {'ON (max ' + str(self.profile.max_stacks) + ')' if self.profile.stack_enabled else 'OFF'}")
         self.log(f"")
 
     # ══════════════════════════════════════
@@ -371,10 +313,7 @@ class CombatEngine:
             self.state = s
             self._state_time = time.time()
             if self.log_states:
-                extra = ""
-                if self.stacks:
-                    extra = f" [{self.stacks.stacks}/{self.stacks.max_stacks}]"
-                self.log(f"[STATE] {old.name} → {s.name}{extra}")
+                self.log(f"[STATE] {old.name} → {s.name}")
 
     # ══════════════════════════════════════
     #  Core Tick
@@ -385,12 +324,9 @@ class CombatEngine:
         mp = self.conn.get_mp()
         in_combat = self.conn.in_combat()
         has_target = self.conn.has_target()
-        target_hp = self.conn.get_target_hp() if has_target else 0
         alive = hp > 0
 
-        # Update systems
-        if self.stacks:
-            self.stacks.update(in_combat)
+        # Update defensives
         self._update_defensives()
         self._check_buff_safety(hp)
 
@@ -441,11 +377,10 @@ class CombatEngine:
         }.get(self.state, lambda: None)()
 
     # ══════════════════════════════════════
-    #  Defensive Tracking (generic)
+    #  Defensive Tracking
     # ══════════════════════════════════════
 
     def _update_defensives(self):
-        """Track active defensive cooldowns by duration from SPELL_INFO."""
         for name, pop_time in list(self._defensive_active.items()):
             info = self.profile.get_spell(name)
             duration = info.get("duration", 10)
@@ -458,7 +393,6 @@ class CombatEngine:
                     self.log(f"[BUFF] {name} expired")
 
     def _check_buff_safety(self, hp):
-        """Check BUFF_SAFETY config for dangerous buff expirations."""
         for name, safety in self.profile.buff_safety.items():
             warn_hp = safety.get("warn_hp_below", 0)
             warn_time = safety.get("warn_before_expiry", 2.0)
@@ -483,12 +417,13 @@ class CombatEngine:
 
         hp, mp = self.conn.get_hp(), self.conn.get_mp()
 
+        # Rest and meditation are special — cast via conn.try_cast_ooc
         if mp < self.profile.rest_mp:
-            if self._try_cast(self.profile.meditation_spell):
-                return
+            self.conn.try_cast_ooc(self.profile.meditation_spell)
+            return
         if hp < self.profile.rest_hp:
-            if self._try_cast(self.profile.rest_spell):
-                return
+            self.conn.try_cast_ooc(self.profile.rest_spell)
+            return
         if hp >= 95 and mp >= 80:
             self._set_state(CombatState.IDLE)
 
@@ -501,28 +436,26 @@ class CombatEngine:
 
         # Gap closer
         if self.profile.gap_closers and self.conn.has_target():
-            target = self.conn.get_target()
-            if target:
-                px, py = self.conn.get_x(), self.conn.get_y()
-                tx, ty = float(target.get("x", px)), float(target.get("y", py))
-                if math.sqrt((tx - px) ** 2 + (ty - py) ** 2) > 3:
-                    for closer in self.profile.gap_closers:
-                        if self._try_cast(closer):
-                            return
+            for closer in self.profile.gap_closers:
+                if self._try_cast(closer):
+                    return
 
         self._set_state(CombatState.COMBAT)
 
     def _do_combat(self):
-        # Refresh buffs
         if self.auto_buff:
             self._refresh_buffs()
 
-        # Target dead = kill
-        if self.conn.has_target() and self.conn.get_target_hp() <= 0:
-            self._kill_count += 1
-            return
+        # Check for priority spell (stack/HP gated)
+        if self.profile.stack_enabled:
+            prio = self.conn.get_priority_spell(
+                self.conn.get_fury_stacks(),
+                self.conn.get_hp()
+            )
+            if prio and self._try_cast(prio):
+                return
 
-        # Main rotation — gated by _can_cast (checks min_stacks)
+        # Main rotation
         self._cast_rotation(self.profile.rotation)
 
     def _do_defensive(self):
@@ -536,7 +469,7 @@ class CombatEngine:
         # Pop defensive cooldowns
         for spell in self.profile.defensive_spells:
             if spell not in self._defensive_active:
-                if self._try_cast(spell):
+                if self._try_cast(spell, emergency=True):
                     self._defensive_active[spell] = time.time()
                     info = self.profile.get_spell(spell)
                     extra_dmg = info.get("extra_damage_taken", 0)
@@ -547,7 +480,7 @@ class CombatEngine:
 
                     # Defensive combo
                     for combo in self.profile.defensive_combo:
-                        if self._try_cast(combo):
+                        if self._try_cast(combo, emergency=True):
                             self.log(f"[DEF] → combo: {combo}")
                             break
                     return
@@ -561,12 +494,21 @@ class CombatEngine:
     def _do_aoe(self):
         if self.auto_buff:
             self._refresh_buffs()
+
+        if self.profile.stack_enabled:
+            prio = self.conn.get_priority_spell(
+                self.conn.get_fury_stacks(),
+                self.conn.get_hp()
+            )
+            if prio and self._try_cast(prio):
+                return
+
         self._cast_rotation(self.profile.aoe_spells)
 
     def _do_kite(self):
         for spell in self.profile.defensive_spells:
             if spell not in self._defensive_active:
-                if self._try_cast(spell):
+                if self._try_cast(spell, emergency=True):
                     self._defensive_active[spell] = time.time()
                     return
 
@@ -583,73 +525,64 @@ class CombatEngine:
             self._set_state(CombatState.IDLE)
 
     # ══════════════════════════════════════
-    #  Casting — Generic, reads SPELL_INFO
+    #  Casting — Delegates to conn.try_cast()
+    #  which handles ignored spells, stack rules,
+    #  HP rules, GCD, cast times
     # ══════════════════════════════════════
 
     def _cast_rotation(self, rotation):
-        """Try to cast spells from a rotation list in priority order."""
         for spell in rotation:
-            if self._can_cast(spell) and self._try_cast(spell):
+            if self._try_cast(spell):
                 return True
         return False
 
-    def _can_cast(self, name):
-        """Check if spell can be cast based on SPELL_INFO min_stacks."""
+    def _try_cast(self, name, emergency=False):
+        """Cast a spell using conn's built-in logic.
+        Respects IGNORED_SPELLS, stack rules, HP rules, GCD."""
+
+        # Quick reject: not available or explicitly ignored
+        if name in self._ignored:
+            return False
         if name not in self._available:
             return False
-        if not self.stacks:
-            return True
 
-        info = self.profile.get_spell(name)
-        min_stacks = info.get("min_stacks", 0)
-        if min_stacks > 0:
-            return self.stacks.has(min_stacks)
-        return True
+        # Delegate to conn.try_cast / try_cast_emergency
+        # These already check:
+        #   - IGNORED_SPELLS (global)
+        #   - Profile IGNORED_SPELLS
+        #   - GCD
+        #   - is_spell_ready
+        #   - Stack rules (min_stacks, stack gating)
+        #   - HP rules (use_below_hp)
+        #   - Channel vs moving
+        #   - Cast time waits
+        if emergency:
+            result = self.conn.try_cast_emergency(name)
+        else:
+            result = self.conn.try_cast(name)
 
-    def _try_cast(self, name):
-        if name not in self._available:
-            return False
-        if time.time() - self._last_gcd < self.profile.gcd:
-            return False
-        if not self.conn.is_spell_ready(name):
-            return False
+        if result:
+            self.stats.on_cast(name)
+            self._apply_buff_if_needed(name)
 
-        result = self.conn.cast(name)
-        if not result:
-            return False
+            if self.log_casts:
+                info = self.profile.get_spell(name)
+                stype = info.get("type", "?")
+                icons = {
+                    "builder": "⚔", "spender": "💥", "nuke": "🗡",
+                    "buff": "🛡", "cc": "⚡", "gap_closer": "🏃",
+                    "defensive": "🛡", "execute": "🗡", "utility": "🔧",
+                }
+                icon = icons.get(stype, "⚡")
+                stk = ""
+                if self.profile.stack_enabled:
+                    stacks = self.conn.get_fury_stacks()
+                    stk = f" [{stacks}/{self.profile.max_stacks}]"
+                self.log(f"[{self.state.name[:4]}] {icon} {name}{stk}")
 
-        self._last_gcd = time.time()
-        self.stats.on_cast(name)
-
-        # Stack management from SPELL_INFO
-        info = self.profile.get_spell(name)
-        if self.stacks:
-            gen = info.get("generates_stacks", 0)
-            cost = info.get("consumes_stacks", 0)
-            if gen > 0:
-                self.stacks.gain(gen)
-            if cost != 0:
-                self.stacks.spend(cost)
-
-        # Buff tracking
-        self._apply_buff_if_needed(name)
-
-        # Log
-        if self.log_casts:
-            stype = info.get("type", "?")
-            icons = {
-                "builder": "⚔", "spender": "", "nuke": "🗡",
-                "buff": "🛡", "cc": "", "gap_closer": "🏃",
-                "defensive": "", "execute": "🗡", "utility": "🔧",
-            }
-            icon = icons.get(stype, "⚡")
-            stk = f" [{self.stacks.stacks}/{self.stacks.max_stacks}]" if self.stacks else ""
-            self.log(f"[{self.state.name[:4]}] {icon} {name}{stk}")
-
-        return True
+        return result
 
     def _apply_buff_if_needed(self, name):
-        """If spell is a buff with duration, track it."""
         info = self.profile.get_spell(name)
         dur = info.get("duration", 0)
         if dur > 0:
@@ -661,9 +594,10 @@ class CombatEngine:
 
     def _refresh_buffs(self):
         for buff in self.profile.buffs:
+            if buff in self._ignored:
+                continue
             dur = self.profile.buff_durations.get(buff,
                   self.profile.get_spell(buff).get("duration", 0))
-            refresh_before = 3.0 if dur > 0 else self.profile.rebuff_interval
 
             if dur > 0:
                 if self.buffs.needs_refresh(buff, 3.0):
@@ -681,15 +615,7 @@ class CombatEngine:
 
     def _count_enemies(self):
         try:
-            mobs = self.conn.get_nearby_mobs()
-            if not mobs:
-                return 0
-            px, py = self.conn.get_x(), self.conn.get_y()
-            return sum(1 for e in mobs
-                       if e.get("hp", 0) > 0
-                       and not e.get("static")
-                       and math.sqrt((float(e.get("x", 0)) - px) ** 2 +
-                                     (float(e.get("y", 0)) - py) ** 2) < 10)
+            return self.conn.get_enemy_count(10)
         except Exception:
             return 0
 
