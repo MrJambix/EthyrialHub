@@ -88,7 +88,12 @@ def heal_loop(dps_when_safe=True):
     return conn.do_heal_loop(dps_when_safe)
 
 # ── LOOT ──────────────────────────────────────────────────
-def loot():          return conn.auto_loot()
+def loot():
+    """Loot corpse window if open, fallback to auto_loot."""
+    r = conn._send("LOOT_CORPSE_WINDOW")
+    if r and "OK" in r:
+        return True
+    return conn.auto_loot()
 def loot_nearest():  return conn.loot_nearest()
 def has_loot():      return conn.has_loot_window()
 def loot_items():    return conn.get_loot_window_items()
