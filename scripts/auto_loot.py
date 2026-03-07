@@ -1,6 +1,5 @@
 """
-Auto-Loot v5 — Corpse Window Looter
-Detects kills, waits for corpse window, calls TakeAll via DLL.
+Auto-Loot
 """
 import time
 import ethytool_wraps
@@ -27,12 +26,6 @@ def try_loot_corpse(max_wait=3.0):
         time.sleep(0.25)
     return False, "TIMEOUT"
 
-print()
-print("+" + "-" * 53 + "+")
-print("|  AUTO-LOOT v5 — Corpse Window Looter               |")
-print("|  Detects kills -> waits for corpse -> TakeAll       |")
-print("+" + "-" * 53 + "+")
-print()
 
 had_target = False
 last_target_name = ""

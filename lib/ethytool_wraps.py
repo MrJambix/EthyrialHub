@@ -31,16 +31,105 @@ def wildlands():    return conn.in_wildlands()
 def dist(tx, ty):   return conn.distance_to(tx, ty)
 def near(tx, ty, r=5): return conn.is_near(tx, ty, r)
 
+def move_to_target():
+    """Move toward current hostile target."""
+    r = conn._send("MOVE_TO_TARGET")
+    return r and "OK" in r
+
+def stop_moving():
+    """Stop all movement."""
+    return conn._send("STOP_MOVEMENT")
+
 # ── TARGET ────────────────────────────────────────────────
 def target():        return conn.get_target()
-def target_hp():     return conn.get_target_hp()
-def target_name():   return conn.get_target_name()
-def has_target():    return conn.has_target()
-def target_dead():   return conn.is_target_dead()
+
+def target_hp():
+    """Current target HP. Returns 0 if no target."""
+    r = conn._send("TARGET_HP")
+    if not r or r in ("NO_TARGET", "NO_PLAYER"):
+        return 0.0
+    try:
+        return float(r)
+    except (ValueError, TypeError):
+        return 0.0
+
+def target_name():
+    """Current target name. Returns '' if no target."""
+    r = conn._send("TARGET_NAME")
+    if not r or r in ("NO_TARGET", "NO_PLAYER", "UNKNOWN"):
+        return ""
+    return r
+
+def has_target():
+    """True if we have a valid living target."""
+    r = conn._send("HAS_TARGET")
+    return r == "1"
+
+def target_dead():
+    """True if target exists but is dead."""
+    return has_target() and target_hp() <= 0
+
+def target_nearest():
+    """Target the nearest attackable enemy. Returns name or None."""
+    r = conn._send("TARGET_NEAREST")
+    if not r or "OK" not in r:
+        return None
+    for part in r.split("|"):
+        if part.startswith("name="):
+            return part.split("=", 1)[1]
+    return "targeted"
+
+def target_distance():
+    """Distance to current target. Returns 999 if no target."""
+    r = conn._send("TARGET_DISTANCE")
+    if not r or r in ("NO_TARGET", "NO_PLAYER"):
+        return 999.0
+    try:
+        return float(r)
+    except (ValueError, TypeError):
+        return 999.0
+
+def target_info():
+    """Full target info dict: name, hp, max_hp, dist."""
+    r = conn._send("TARGET_INFO")
+    if not r or r in ("NO_TARGET", "NO_PLAYER"):
+        return None
+    d = {}
+    for part in r.split("|"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            d[k] = v
+    return d
+
 def target_boss():   return conn.is_target_boss()
 def target_elite():  return conn.is_target_elite()
 def friendly():      return conn.get_friendly_target()
 def friendly_hp():   return conn.get_friendly_hp()
+
+# ── ENEMIES ───────────────────────────────────────────────
+def scan_enemies():
+    """List of nearby attackable enemies sorted by distance."""
+    r = conn._send("SCAN_ENEMIES")
+    if not r or r == "NONE":
+        return []
+    parts = r.split("###")
+    if parts[0].startswith("count="):
+        parts = parts[1:]
+    result = []
+    for p in parts:
+        d = {}
+        for kv in p.split("|"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                d[k] = v
+        if d:
+            result.append(d)
+    return result
+
+def enemy_count(r=10):
+    """Count enemies within range."""
+    enemies = scan_enemies()
+    return len([e for e in enemies if float(e.get("dist", 999)) <= r])
 
 # ── PARTY ─────────────────────────────────────────────────
 def party():            return conn.get_party()
@@ -72,7 +161,7 @@ def cast_first(lst):
     return None
 def buff():              return conn.do_buff()
 def pull():              return conn.do_pull()
-def rotate():            return conn.do_rotate()
+def rotate():            return conn.do_rotation()
 def nuke():              return conn.do_nuke()
 def defend():            return conn.do_defend()
 def fight():             return conn.do_fight()
@@ -86,6 +175,35 @@ def shield_party():      return conn.do_shield_party()
 def dps_weave():         return conn.do_dps_weave()
 def heal_loop(dps_when_safe=True):
     return conn.do_heal_loop(dps_when_safe)
+
+# ── STACKS / BUFFS ────────────────────────────────────────
+def fury_stacks():
+    """Get current fury stack count. Returns int 0-20."""
+    return conn.get_fury_stacks()
+
+def get_buffs():
+    """Get all active buffs as list of dicts."""
+    return conn.get_player_buffs()
+
+def get_stacks():
+    """Get all active stack effects."""
+    return conn.get_player_stacks()
+
+def has_buff(name):
+    """Check if a specific buff is active by ID or name."""
+    buffs = conn.get_player_buffs()
+    for b in buffs:
+        if b.get("id") == name or b.get("name") == name:
+            return True
+    return False
+
+def buff_duration(name):
+    """Get remaining duration of a buff. Returns 0 if not found."""
+    buffs = conn.get_player_buffs()
+    for b in buffs:
+        if b.get("id") == name or b.get("name") == name:
+            return float(b.get("dur", 0))
+    return 0.0
 
 # ── LOOT ──────────────────────────────────────────────────
 def loot():
@@ -121,8 +239,7 @@ def nearby_names():     return conn.get_nearby_names()
 def nearby_count():     return conn.get_nearby_count()
 def find(name):         return conn.find_nearby(name)
 def closest(name=None): return conn.find_closest_nearby(name)
-def enemies(r=10):      return conn.get_enemies(r)
-def enemy_count(r=10):  return conn.get_enemy_count(r)
+def enemies(r=10):      return scan_enemies()
 def scene():            return conn.get_scene()
 def scene_count():      return conn.get_scene_count()
 def find_scene(name):   return conn.find_in_scene(name)
