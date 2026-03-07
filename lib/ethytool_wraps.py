@@ -227,29 +227,40 @@ class _CombatState:
 _state = _CombatState()
 
 
-def _load_profile(name=None):
-    """Load a class profile from builds/<name>.py"""
-    if _state.profile and name and name == _state.profile_name:
-        return _state.profile
+def _load_profile():
+    """
+    Auto-load the correct build profile based on detected class.
+    Looks for builds/<classname>.py
+    """
+    global _profile_cache
+    if _profile_cache is not None:
+        return _profile_cache
 
-    if not name:
-        name = my_class().lower()
-        if name == "unknown":
-            return None
+    detected = my_class().lower().replace(" ", "_")
+    if not detected or detected == "unknown":
+        log("Could not detect class from spells")
+        return None
 
-    script_dir = _Path(__file__).parent
-    for path in [script_dir / "builds" / f"{name}.py", script_dir / f"{name}.py"]:
+    search = [
+        _Path(__file__).parent / "builds" / f"{detected}.py",
+        _Path(__file__).parent.parent / "builds" / f"{detected}.py",
+        _Path(__file__).parent / f"{detected}.py",
+    ]
+
+    for path in search:
         if path.exists():
-            spec = _importlib_util.spec_from_file_location(name, str(path))
-            module = _importlib_util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            _state.profile = module
-            _state.profile_name = name
-            _state.max_stacks = getattr(module, "MAX_STACKS", 20)
-            _state.stack_decay_time = getattr(module, "STACK_DECAY_TIME", 8.0)
-            _state.gcd = getattr(module, "GCD", 0.5)
-            return module
+            try:
+                spec = _importlib_util.spec_from_file_location(detected, str(path))
+                mod = _importlib_util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                _profile_cache = mod
+                log(f"Loaded build: {detected} from {path.name}")
+                return mod
+            except Exception as e:
+                log(f"Failed to load {path}: {e}")
 
+    log(f"No build profile found for '{detected}'")
+    log(f"Create builds/{detected}.py to add one")
     return None
 
 
@@ -296,6 +307,23 @@ def _try_cast(name):
 
     return True
 
+# ══════════════════════════════════════════════════════════════
+#  IGNORED SPELLS — shared utility, never used in combat
+#  Excluded from class detection and rotations
+# ══════════════════════════════════════════════════════════════
+
+_IGNORED_SPELLS = {
+    "Summon Hallowed Ghost",
+    "Siphon Shadow Energies",
+    "Earthglow",
+    "Light of the Keeper",
+    "Hurry",
+    "Leyline Meditation",
+    "Rest",
+}
+
+# Profile cache — must exist before _load_profile references it
+_profile_cache = None
 
 # ══════════════════════════════════════════════════════════════
 #  PLAYER — Health, Mana, Status
@@ -369,15 +397,37 @@ def cast_first(lst):
 
 
 def buff():
-    """Apply all class buffs that need refreshing."""
+    """Apply all class buffs that need refreshing. Respects BUFF_CONFIG."""
     p = _load_profile()
     if not p:
         return False
     buffs = getattr(p, "BUFFS", [])
     info = getattr(p, "SPELL_INFO", {})
+    config = getattr(p, "BUFF_CONFIG", {})
     casted = False
     for name in buffs:
-        dur = info.get(name, {}).get("duration", 0)
+        spell = info.get(name, {})
+        cfg = config.get(name, {})
+
+        # Permanent buff — only cast once per session
+        if cfg.get("permanent") or spell.get("permanent"):
+            if name in _state.buff_timers:
+                continue  # Already cast this session, skip
+            if _try_cast(name):
+                _state.buff_timers[name] = _time.time()
+                casted = True
+            continue
+
+        # Long-duration buff — check recast interval
+        recast = cfg.get("recast_interval", 0)
+        if recast > 0:
+            if name in _state.buff_timers:
+                elapsed = _time.time() - _state.buff_timers[name]
+                if elapsed < recast:
+                    continue  # Still active, skip
+
+        # Normal buff — refresh before expiry
+        dur = cfg.get("duration", spell.get("duration", 0))
         if _state.buff_needs_refresh(name, dur, 3.0):
             if _try_cast(name):
                 _state.buff_timers[name] = _time.time()
