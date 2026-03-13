@@ -1,0 +1,29 @@
+# EthyTool — Mod Creator & Bot Creator Library
+# Core
+pyyaml>=6.0
+typer>=0.9.0
+rich>=13.0.0
+
+# Screen capture & computer vision
+opencv-python>=4.8.0
+mss>=9.0.0
+Pillow>=10.0.0
+
+# DPS Dashboard charts
+matplotlib>=3.7.0
+numpy>=1.24.0
+
+# Profile/bot config validation
+pydantic>=2.0
+
+# Process monitoring (auto-detect game crash)
+psutil>=5.9.0
+
+# Global hotkeys (F5=stop scripts, F6=pause)
+keyboard>=0.13.5
+
+# Win32 API (window detection, reliable screen rect)
+pywin32>=306
+
+# Hot reload (dev mode — edit scripts without restart)
+watchdog>=3.0
