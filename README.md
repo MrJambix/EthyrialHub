@@ -8,6 +8,10 @@ Work in Progress
 
 A modding and scripting toolkit for Ethyrial: Echoes of Yore. Read game data, interact with entities, build overlays, track stats, create custom tools — all through a simple Python API.
 
+## Key Required
+
+**A key is required to use EthyTool.** On first launch you will be prompted to enter your key. Reach out to **MrJambix** on Discord for a key.
+
 ## Requirements
 
 - **Windows 10/11**
@@ -20,10 +24,12 @@ A modding and scripting toolkit for Ethyrial: Echoes of Yore. Read game data, in
 1. Download the latest release
 2. Extract to any folder
 3. Install Python if you haven't already
-4. Launch the game
-5. Run `EthyTool.exe`
-6. Click **Inject**
-7. Open the Scripts tab and run scripts
+4. **Get a key** — reach out to **MrJambix** on Discord
+5. Launch the game
+6. Run `EthyTool.exe`
+7. Enter your key when prompted
+8. Click **Inject**
+9. Open the Scripts tab and run scripts
 
 ## What Can You Do?
 
