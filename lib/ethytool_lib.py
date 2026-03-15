@@ -1600,19 +1600,6 @@ class EthyToolConnection:
     def dump_methods(self, cn): return self._send(f"DUMP_METHODS_{cn}") or ""
     def dump_fields_raw(self): return self._send("DUMP_FIELDS") or ""
 
-    def craftable_filter_toggle(self):
-        """CRAFTABLE_FILTER_TOGGLE: toggle craftable-only filter on crafting stations.
-        When enabled, only shows blueprints where player has materials in bag."""
-        return self._send("CRAFTABLE_FILTER_TOGGLE") == "1"
-
-    def craftable_filter_set(self, enabled: bool):
-        """CRAFTABLE_FILTER 1/0: enable or disable craftable-only filter."""
-        return self._send(f"CRAFTABLE_FILTER {'1' if enabled else '0'}") == "1"
-
-    def craftable_filter_status(self):
-        """CRAFTABLE_FILTER_STATUS: returns True if craftable filter is enabled."""
-        return self._send("CRAFTABLE_FILTER_STATUS") == "1"
-
     def get_open_containers(self):
         """OPEN_CONTAINERS: items in all currently open loot/container windows."""
         r = self._send("OPEN_CONTAINERS")
