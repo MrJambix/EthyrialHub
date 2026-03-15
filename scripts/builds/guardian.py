@@ -7,6 +7,15 @@
 ╚══════════════════════════════════════════════════════════════╝
 """
 
+# Discipline level — set your level; skills in SKILL_LEVEL_REQUIREMENTS are blocked until you have the level.
+# TODO: Add your discipline's skill: level pairs below.
+DISCIPLINE_LEVEL = 25
+SKILL_LEVEL_REQUIREMENTS = {
+    # "Skill Name": 5,
+    # "Other Skill": 10,
+}
+IGNORED_SPELLS = {s for s, req in SKILL_LEVEL_REQUIREMENTS.items() if DISCIPLINE_LEVEL < req}
+
 HEAL_HP        = 50
 DEFENSIVE_HP   = 40
 EMERGENCY_HP   = 20

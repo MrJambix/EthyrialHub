@@ -208,6 +208,7 @@ class EthyToolConnection:
         self._log_fn = lambda msg: print(msg, flush=True)
         self._cast_failures = {}
         self._blocked_spells = set()
+        self._pet_attacked_uid = None
 
     @property
     def pid(self):
@@ -418,8 +419,9 @@ class EthyToolConnection:
     def get_magical_armor(self):  return self._float(self._send("PLAYER_MAG_ARMOR"))
 
     def cast(self, spell_name: str) -> bool:
-        """Cast spell by display name. Returns True on success."""
-        r = self._send(f"CAST_{spell_name}")
+        """Cast spell by display name. Resolves profile name to game's exact spell name."""
+        resolved = self.resolve_spell_name(spell_name)
+        r = self._send(f"CAST_{resolved}")
         return r is not None and r.startswith("OK")
 
     def cast_first(self, spell_list):
@@ -699,6 +701,28 @@ class EthyToolConnection:
         return r == "OK"
 
     # ══════════════════════════════════════════════════════════════
+    #  NETWORK BRIDGE — server address dump + raw packet send/receive
+    # ══════════════════════════════════════════════════════════════
+
+    def dump_server_address(self):
+        """DUMP_SERVER_ADDRESS: dump game server IP:port from Lidgren NetPeer.
+        Returns dict with ip, port or error string if not found."""
+        r = self._send("DUMP_SERVER_ADDRESS")
+        if not r or r in ("NOT_FOUND", "IL2CPP_NOT_AVAILABLE", "NOT_INITIALIZED", "EXCEPTION"):
+            return r
+        return self._parse_kv(r)
+
+    def net_udp_send_recv(self, host: str, port: int, hex_payload: str, timeout_ms: int = 2000):
+        """NET_UDP_SENDRECV: send UDP packet (hex), optionally wait for response.
+        Returns OK, hex response, TIMEOUT, or ERROR:message."""
+        return self._send(f"NET_UDP_SENDRECV {host} {port} {hex_payload} {timeout_ms}")
+
+    def net_tcp_send_recv(self, host: str, port: int, hex_payload: str = "", timeout_ms: int = 5000):
+        """NET_TCP_SENDRECV: TCP connect, send hex payload, receive response.
+        Returns hex response or ERROR:message."""
+        return self._send(f"NET_TCP_SENDRECV {host} {port} {hex_payload} {timeout_ms}")
+
+    # ══════════════════════════════════════════════════════════════
     #  AUTOCAST
     # ══════════════════════════════════════════════════════════════
 
@@ -756,7 +780,14 @@ class EthyToolConnection:
 
     def get_party_alive(self):    return [m for m in self.get_party() if not m.get("dead")]
     def get_party_dead(self):     return [m for m in self.get_party() if m.get("dead")]
-    def get_party_in_range(self): return [m for m in self.get_party() if m.get("in_range") and not m.get("dead")]
+    def get_party_in_range(self):
+        """Party members in range. Self is always treated as in range."""
+        def _in_range(m):
+            if m.get("is_self"):
+                return True
+            v = m.get("in_range")
+            return v in (True, 1, "1")
+        return [m for m in self.get_party() if _in_range(m) and not m.get("dead")]
 
     def get_lowest_party(self, include_self=True):
         members = self.get_party_in_range()
@@ -874,6 +905,110 @@ class EthyToolConnection:
         return results
 
     # ══════════════════════════════════════════════════════════════
+    #  MONSTERDEX — rich monster bridging (requires monster_dex.cpp)
+    # ══════════════════════════════════════════════════════════════
+
+    def _parse_mdx_records(self, raw):
+        """Parse ###-separated MonsterDex records into a list of dicts."""
+        if not raw or raw in ("NONE", "NOT_FOUND", "NO_TARGET",
+                               "IL2CPP_NOT_AVAILABLE", "NO_PLAYER"):
+            return []
+        parts = raw.split("###")
+        if parts and parts[0].startswith("count="):
+            parts = parts[1:]
+        out = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            d = {}
+            for kv in part.split("|"):
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    d[k.strip()] = v.strip()
+            if d:
+                out.append(d)
+        return out
+
+    def monsterdex_scan(self):
+        """MONSTERDEX_SCAN — nearby + scene merged, deduped by ptr.
+        Returns list of dicts with full monster data including ptr, class,
+        uid, name, hp, mp, position, flags, speeds, and all sub-pointers."""
+        return self._parse_mdx_records(self._send("MONSTERDEX_SCAN"))
+
+    def monsterdex_nearby(self):
+        """MONSTERDEX_NEARBY — NearbyEntities list, monsters only, with ptr."""
+        return self._parse_mdx_records(self._send("MONSTERDEX_NEARBY"))
+
+    def monsterdex_scene(self):
+        """MONSTERDEX_SCENE — EntityManager dict, monsters only, with ptr."""
+        return self._parse_mdx_records(self._send("MONSTERDEX_SCENE"))
+
+    def monsterdex_target(self):
+        """MONSTERDEX_TARGET — current hostile target as a MonsterRecord dict."""
+        recs = self._parse_mdx_records(self._send("MONSTERDEX_TARGET"))
+        return recs[0] if recs else None
+
+    def monsterdex_by_uid(self, uid):
+        """MONSTERDEX_BY_UID <uid> — find a specific monster by UID (searches nearby then scene)."""
+        recs = self._parse_mdx_records(self._send(f"MONSTERDEX_BY_UID {uid}"))
+        return recs[0] if recs else None
+
+    def monsterdex_spells(self, uid):
+        """MONSTERDEX_SPELLS <uid> — dump the spell list of a monster by UID.
+        Returns list of dicts: idx, unique, display, category, cd, cur_cd,
+        mana, range, cast, channel, auto, self."""
+        return self._parse_mdx_records(self._send(f"MONSTERDEX_SPELLS {uid}"))
+
+    def monsterdex_offsets(self):
+        """MONSTERDEX_OFFSETS — dict of resolved LivingEntity field offsets (hex strings)."""
+        r = self._send("MONSTERDEX_OFFSETS")
+        if not r:
+            return {}
+        return self._parse_kv(r)
+
+    # ── MonsterDex convenience helpers ────────────────────────────────────────
+
+    def monsterdex_find_by_name(self, name):
+        """Return a list of all nearby/scene monsters whose name contains `name` (case-insensitive)."""
+        nl = name.lower()
+        return [m for m in self.monsterdex_scan()
+                if nl in m.get("name", "").lower()]
+
+    def monsterdex_closest(self, name=None, alive_only=True):
+        """Return the closest monster, optionally filtered by name substring and/or alive-only."""
+        monsters = self.monsterdex_scan()
+        if name:
+            nl = name.lower()
+            monsters = [m for m in monsters if nl in m.get("name", "").lower()]
+        if alive_only:
+            monsters = [m for m in monsters if float(m.get("hp", 0)) > 0]
+        if not monsters:
+            return None
+        return min(monsters, key=lambda m: float(m.get("dist", 9999)))
+
+    def monsterdex_living(self):
+        """Return only monsters with HP > 0 (alive)."""
+        return [m for m in self.monsterdex_scan()
+                if float(m.get("hp", 0)) > 0]
+
+    def monsterdex_bosses(self):
+        """Return all nearby boss-flagged monsters."""
+        return [m for m in self.monsterdex_scan() if m.get("boss") == "1"]
+
+    def monsterdex_elites(self):
+        """Return all nearby elite-flagged monsters."""
+        return [m for m in self.monsterdex_scan() if m.get("elite") == "1"]
+
+    def monsterdex_rares(self):
+        """Return all nearby rare-spawn monsters."""
+        return [m for m in self.monsterdex_scan() if m.get("rare") == "1"]
+
+    def monsterdex_in_combat(self):
+        """Return all nearby monsters currently in combat."""
+        return [m for m in self.monsterdex_scan() if m.get("combat") == "1"]
+
+    # ══════════════════════════════════════════════════════════════
     #  SCENE ENTITIES
     # ══════════════════════════════════════════════════════════════
 
@@ -936,6 +1071,8 @@ class EthyToolConnection:
     def scan_scene(self):      return self._parse_scan(self._send("SCAN_SCENE"))
 
     def scan_doodads(self):
+        """Scan for doodad-like entities (harvest nodes, resources, interactables).
+        Uses Game.dll hierarchy: Doodad, Corpse, ConstructionDoodad, WallEntity, GrowingDoodad."""
         entities = self.get_nearby_addresses()
         if not entities:
             entities = self.get_scene_addresses()
@@ -943,15 +1080,20 @@ class EthyToolConnection:
         PLAYER_CLASSES = {"LocalPlayerEntity", "PlayerEntity", "LivingEntity"}
         MOB_CLASSES = {"NPCEntity", "MonsterEntity", "HostileEntity"}
         SKIP_CLASSES = PLAYER_CLASSES | MOB_CLASSES
+        # From Game.dll: Doodad, Corpse, ConstructionDoodad, WallEntity, GrowingDoodad
+        # Plus common IL2CPP class names for harvest/gather
+        DOODAD_CLASSES = {
+            "Doodad", "HarvestNode", "GatherableEntity", "ResourceNode",
+            "InteractableEntity", "StaticEntity", "Corpse", "ConstructionDoodad",
+            "WallEntity", "GrowingDoodad",
+        }
         for e in entities:
             cls = e.get("class", "?")
             if cls in SKIP_CLASSES:
                 continue
             if e.get("hidden"):
                 continue
-            if e.get("static") or cls in ("Doodad", "HarvestNode", "GatherableEntity",
-                                         "ResourceNode", "InteractableEntity",
-                                         "StaticEntity"):
+            if e.get("static") or cls in DOODAD_CLASSES:
                 doodads.append(e)
         return doodads
 
@@ -994,12 +1136,72 @@ class EthyToolConnection:
         return any(nl in s.get("display", "").lower() or nl in s.get("name", "").lower()
                    for s in self.get_spells())
 
+    def resolve_spell_name(self, profile_name):
+        """Resolve profile/build spell name to game's exact display name for CAST_ command."""
+        _, display = self.get_spell_from_game(profile_name)
+        return display or profile_name
+
+    def get_spell_from_game(self, profile_name):
+        """
+        Look up game spell data for a profile spell name.
+        Prefers exact match, then longest substring match to avoid collisions
+        (e.g. 'Spirit Shot' not 'Spirit' when both exist).
+        Returns (spell_dict, display_name) or (None, None).
+        """
+        if not profile_name:
+            return None, None
+        pl = profile_name.lower().strip()
+        pl_ns = pl.replace(" ", "")
+        spells = self.get_spells()
+        exact = None
+        candidates = []
+        for s in spells:
+            d = (s.get("display", "") or s.get("name", "") or "").strip()
+            n = (s.get("name", "") or "").strip()
+            dl, nl = d.lower(), n.lower()
+            dn_ns = dl.replace(" ", "")
+            nn_ns = nl.replace(" ", "")
+            if pl == dl or pl == nl or pl_ns == dn_ns or pl_ns == nn_ns:
+                exact = (s, d or profile_name)
+                break
+            if pl in dl or pl in nl or pl_ns in dn_ns or pl_ns in nn_ns:
+                candidates.append((len(d), s, d or profile_name))
+        if exact:
+            return exact
+        if candidates:
+            candidates.sort(key=lambda x: -x[0])
+            return (candidates[0][1], candidates[0][2])
+        return None, None
+
     def is_spell_ready(self, name):
-        nl = name.lower()
-        for s in self.get_spells():
-            if nl in s.get("display", "").lower() or nl in s.get("name", "").lower():
-                return s.get("cur_cd", 0) <= 0
-        return False
+        """
+        Check if spell is ready: off cooldown and has sufficient mana.
+        Uses game data (cur_cd, mana) for accurate detection.
+        """
+        spell, _ = self.get_spell_from_game(name)
+        if not spell:
+            return False
+        cd = spell.get("cur_cd", spell.get("cd", 0))
+        try:
+            if float(cd) > 0:
+                return False
+        except (TypeError, ValueError):
+            pass
+        mana = spell.get("mana", 0)
+        scaled = spell.get("scaled_mana", 0)
+        try:
+            if scaled is not None and float(scaled) > 0:
+                sval = float(scaled)
+                mana_pct = sval * 100 if sval <= 1 else sval
+                if self.get_mp() < mana_pct:
+                    return False
+            elif mana and float(mana) > 0:
+                cur_mp = self.get_current_mp()
+                if cur_mp < float(mana):
+                    return False
+        except (TypeError, ValueError):
+            pass
+        return True
 
     def detect_class(self):
         spells = self.get_spells()
@@ -1066,6 +1268,24 @@ class EthyToolConnection:
             return []
         return [self._parse_kv(s) for s in r.split("###") if s.strip()]
 
+    def get_discipline_level(self, discipline_name):
+        """Get discipline level from PLAYER_SKILLS. Returns int or None if not found."""
+        skills = self.get_player_skills()
+        dn = discipline_name.lower()
+        for s in skills:
+            name = (s.get("name") or "").strip().lower()
+            if dn in name or name in dn:
+                for key in ("|i20", "|i18", "|i1C", "|i24", "|i28", "level", "lvl"):
+                    v = s.get(key)
+                    if v is not None:
+                        try:
+                            lv = int(float(v))
+                            if 1 <= lv <= 100:
+                                return lv
+                        except (ValueError, TypeError):
+                            pass
+        return None
+
     def has_buff(self, name):
         for b in self.get_player_buffs():
             if b.get("id") == name or b.get("name") == name:
@@ -1121,6 +1341,32 @@ class EthyToolConnection:
         if hp_pct > use_below:
             return False
 
+        return True
+
+    def check_level_rules(self, name):
+        """Check if player's discipline level meets spell requirement (e.g. Spiritualism)."""
+        p = self.load_profile()
+        if not p:
+            return True
+
+        reqs = getattr(p, "SKILL_LEVEL_REQUIREMENTS", {})
+        if name not in reqs:
+            return True
+
+        required = reqs[name]
+        level = getattr(p, "SPIRITUALISM_LEVEL", None)
+        if level is None:
+            level = getattr(p, "DISCIPLINE_LEVEL", None)
+        if level is None:
+            level = self.get_discipline_level("Spiritualism")
+            if level is None:
+                level = self.get_discipline_level("Spirit")
+            if level is None:
+                level = self.get_discipline_level("Ranger")
+        if level is None:
+            level = 0
+        if level < required:
+            return False
         return True
 
     def get_priority_spell(self, stacks, hp_pct):
@@ -1352,6 +1598,19 @@ class EthyToolConnection:
     def dump_methods(self, cn): return self._send(f"DUMP_METHODS_{cn}") or ""
     def dump_fields_raw(self): return self._send("DUMP_FIELDS") or ""
 
+    def craftable_filter_toggle(self):
+        """CRAFTABLE_FILTER_TOGGLE: toggle craftable-only filter on crafting stations.
+        When enabled, only shows blueprints where player has materials in bag."""
+        return self._send("CRAFTABLE_FILTER_TOGGLE") == "1"
+
+    def craftable_filter_set(self, enabled: bool):
+        """CRAFTABLE_FILTER 1/0: enable or disable craftable-only filter."""
+        return self._send(f"CRAFTABLE_FILTER {'1' if enabled else '0'}") == "1"
+
+    def craftable_filter_status(self):
+        """CRAFTABLE_FILTER_STATUS: returns True if craftable filter is enabled."""
+        return self._send("CRAFTABLE_FILTER_STATUS") == "1"
+
     def get_open_containers(self):
         """OPEN_CONTAINERS: items in all currently open loot/container windows."""
         r = self._send("OPEN_CONTAINERS")
@@ -1438,7 +1697,7 @@ class EthyToolConnection:
             return self._profile_cache
         detected = self.detect_class().lower().replace(" ", "_")
         if not detected or detected == "unknown": return None
-        lib_dir = Path(__file__).parent
+        lib_dir = Path(__file__).resolve().parent
         search = [
             lib_dir / "builds" / f"{detected}.py",
             lib_dir / "scripts" / "builds" / f"{detected}.py",
@@ -1499,6 +1758,17 @@ class EthyToolConnection:
             hp_pct = self.get_hp_pct()
             if not self.check_hp_rules(name, hp_pct):
                 return False
+            if not self.check_level_rules(name):
+                return False
+
+        if name == "Attack":
+            if not self.has_target():
+                self._pet_attacked_uid = None
+                return False
+            t = self.get_target()
+            uid = t.get("uid") if t else None
+            if uid is not None and self._pet_attacked_uid == uid:
+                return False
 
         if info.get("channel") and self.is_moving():
             return False
@@ -1511,9 +1781,21 @@ class EthyToolConnection:
                 self.log(f"⚠ Blocked '{name}' — failed {self._cast_failures[name]}x (skill level too low?)")
             return False
 
+        # Ground-targeted spells (e.g. Poison Vial): cast twice to auto-confirm at same spot
+        if info.get("ground_targeted"):
+            delay = getattr(p, "GROUND_CAST_DELAY", 0.05) if p else 0.05
+            time.sleep(delay)
+            self.cast(name)  # second cast confirms placement (game reuses last spot)
+
         self._cast_failures.pop(name, None)
         self._state.trigger_gcd()
         self._state.track_cast(name)
+
+        if name == "Attack":
+            t = self.get_target()
+            uid = t.get("uid") if t else None
+            if uid is not None:
+                self._pet_attacked_uid = uid
 
         if p and getattr(p, "STACK_ENABLED", False):
             self._state.stacks = stacks
@@ -1527,8 +1809,14 @@ class EthyToolConnection:
         if dur > 0:
             self._state.buff_timers[name] = time.time()
 
-        if info.get("cast_time", 0) > 0:
-            time.sleep(info["cast_time"] + 0.1)
+        cast_time = info.get("cast_time", 0)
+        channel_time = info.get("channel_time", 0)
+        if cast_time > 0:
+            buf = getattr(p, "SPELL_CAST_BUFFER", 0.01) if p else 0.01
+            time.sleep(cast_time + buf)
+        if channel_time > 0:
+            buf = getattr(p, "SPELL_CAST_BUFFER", 0.01) if p else 0.01
+            time.sleep(channel_time + buf)
 
         return True
 
@@ -1537,6 +1825,7 @@ class EthyToolConnection:
         if name in self._blocked_spells: return False
         if self._state.on_gcd(): return False
         if not self.is_spell_ready(name): return False
+        if not self.check_level_rules(name): return False
         result = self.cast(name)
         if not result:
             self._cast_failures[name] = self._cast_failures.get(name, 0) + 1
@@ -1550,6 +1839,26 @@ class EthyToolConnection:
         info = self.get_spell_info(name)
         dur = info.get("duration", 0)
         if dur > 0: self._state.buff_timers[name] = time.time()
+        channel_time = info.get("channel_time", 0)
+        if channel_time > 0:
+            buf = getattr(self.load_profile(), "SPELL_CAST_BUFFER", 0.01) or 0.01
+            time.sleep(channel_time + buf)
+        return True
+
+    def do_meditation_if_low_mana(self):
+        """Cast Leyline Meditation when mana ≤ MEDITATION_MANA_PCT (default 10) in combat."""
+        p = self.load_profile()
+        if not p: return False
+        threshold = getattr(p, "MEDITATION_MANA_PCT", 10)
+        if self.get_mp() > threshold: return False
+        if not self.in_combat(): return False
+        med = getattr(p, "MEDITATION_SPELL", "Leyline Meditation")
+        if self._state.on_gcd(): return False
+        if not self.is_spell_ready(med): return False
+        result = self.cast(med)
+        if not result: return False
+        self._state.trigger_gcd()
+        self.log(f"🧘 Meditating at {self.get_mp():.0f}% mana")
         return True
 
     def try_cast_ooc(self, name):
@@ -1569,6 +1878,8 @@ class EthyToolConnection:
         p = self.load_profile()
         if not p:
             return False
+        if self.do_meditation_if_low_mana():
+            return True
 
         stacks = 0
         hp_pct = self.get_hp_pct()
@@ -1580,6 +1891,11 @@ class EthyToolConnection:
             if prio_spell:
                 if self.try_cast(prio_spell):
                     return True
+
+        pet_rotation = getattr(p, "PET_ROTATION", [])
+        for name in pet_rotation:
+            if name not in IGNORED_SPELLS and self.try_cast(name):
+                return True
 
         rotation = getattr(p, "ROTATION", [])
         for name in rotation:
@@ -1603,6 +1919,14 @@ class EthyToolConnection:
             if name in IGNORED_SPELLS: continue
             spell = info.get(name, {})
             cfg = config.get(name, {})
+            if cfg.get("detect_buff"):
+                buff_ids = cfg.get("buff_ids", [name])
+                if any(self.has_buff(bid) for bid in buff_ids):
+                    continue
+                if self.try_cast(name):
+                    self._state.buff_timers[name] = time.time()
+                    casted = True
+                continue
             if cfg.get("permanent") or spell.get("permanent"):
                 if name in self._state.buff_timers: continue
                 if self.try_cast(name):
@@ -1629,9 +1953,13 @@ class EthyToolConnection:
         p = self.load_profile()
         if not p: return False
         self._state.pulls += 1
+        opener_delay = getattr(p, "OPENER_DELAY", 0.01) if p else 0.01
+        for name in getattr(p, "PET_SPELLS", []):
+            if name not in IGNORED_SPELLS:
+                self.try_cast(name); time.sleep(opener_delay)
         for name in getattr(p, "OPENER", []):
             if name not in IGNORED_SPELLS:
-                self.try_cast(name); time.sleep(0.1)
+                self.try_cast(name); time.sleep(opener_delay)
         if self.has_target():
             for name in getattr(p, "GAP_CLOSERS", []):
                 if name not in IGNORED_SPELLS and self.try_cast(name): break
@@ -1642,6 +1970,9 @@ class EthyToolConnection:
         if not p: return None
         self._state.decay(self.in_combat())
         self.do_buff()
+        for name in getattr(p, "PET_ROTATION", []):
+            if name in IGNORED_SPELLS: continue
+            if self.try_cast(name): return name
         for name in getattr(p, "ROTATION", []):
             if name in IGNORED_SPELLS: continue
             if self.try_cast(name): return name
@@ -1689,6 +2020,8 @@ class EthyToolConnection:
         time.sleep(tick)
         while self.has_target() and not self.is_target_dead() and self.is_alive():
             self._state.decay(self.in_combat())
+            if self.do_meditation_if_low_mana():
+                time.sleep(tick); continue
             my_hp = self.get_hp()
             if my_hp < def_trigger: self.do_defend()
             if heal_threshold > 0 and my_hp < heal_threshold:
@@ -1713,6 +2046,8 @@ class EthyToolConnection:
 
     def recover_between_pulls(self):
         p = self.load_profile()
+        if not getattr(p, "REST_ENABLED", True):
+            return
         rest_hp = getattr(p, "REST_HP", 80) if p else 80
         rest_mp = getattr(p, "REST_MP", 60) if p else 60
         if self.get_hp() >= rest_hp and self.get_mp() >= rest_mp: return
@@ -1729,6 +2064,9 @@ class EthyToolConnection:
             time.sleep(1)
 
     def do_recover(self, hp_target=90, mp_target=80, timeout=60):
+        p = self.load_profile()
+        if not getattr(p, "REST_ENABLED", True):
+            return True
         if self.in_combat(): self.wait_until_out_of_combat(30)
         start = time.time()
         while time.time() - start < timeout:
@@ -1768,10 +2106,29 @@ class EthyToolConnection:
     #  HEAL LOOP — Party healing
     # ══════════════════════════════════════════════════════════════
 
+    def _ensure_self_targeted(self):
+        """Ensure friendly target is self (for solo self-heal). Tries TARGET_PARTY 0, then TARGET_FRIENDLY by name from party_scan."""
+        if self.get_friendly_target():
+            return True
+        if self.target_party_member(0):
+            return True
+        px, py, _ = self.get_position()
+        for m in self.party_scan():
+            if m.get("is_self"):
+                return self.target_friendly_by_name(m.get("name", ""))
+            mx, my = float(m.get("x", 0)), float(m.get("y", 0))
+            if abs(mx - px) < 0.5 and abs(my - py) < 0.5:
+                return self.target_friendly_by_name(m.get("name", ""))
+        return False
+
     def do_heal_target(self):
         p = self.load_profile()
         if not p: return False
-        ft_hp = self.get_friendly_hp()
+        ft = self.get_friendly_target()
+        ft_hp = ft.get("hp", 0) if ft else 0
+        if ft is None or ft_hp <= 0:
+            ft_hp = self.get_hp()
+            self._ensure_self_targeted()
         for name in getattr(p, "HEAL_SPELLS", []):
             if name in IGNORED_SPELLS: continue
             thresh = getattr(p, "HEAL_PRIORITY", {}).get(name, 80)
@@ -1787,7 +2144,9 @@ class EthyToolConnection:
         member = hurt[0]
         name = member.get("name", "")
         member_hp = member.get("hp", 100)
-        if not member.get("in_range"): return None
+        in_range = member.get("in_range")
+        if not member.get("is_self") and in_range not in (True, 1, "1"):
+            return None
         idx = member.get("index", -1)
         if idx >= 0: self.target_party(idx)
         else: self.target_party(name)
@@ -1822,6 +2181,7 @@ class EthyToolConnection:
     def do_dps_weave(self):
         p = self.load_profile()
         if not p: return None
+        if self.do_meditation_if_low_mana(): return None
         heal_threshold = getattr(p, "HEAL_HP", 70)
         mana_conserve = getattr(p, "MANA_CONSERVE", 30)
         if self.get_party_below(heal_threshold): return None
@@ -1848,6 +2208,8 @@ class EthyToolConnection:
         def_hp_val = getattr(p, "DEFENSIVE_HP", 40) if p else 40
         while self.is_alive():
             if self.in_combat():
+                if self.do_meditation_if_low_mana():
+                    time.sleep(tick); continue
                 critical = self.get_party_below(emergency_hp)
                 if critical:
                     self.do_shield_party(); self.do_heal_party()
@@ -2037,23 +2399,54 @@ def create_connection(pid: Optional[int] = None) -> EthyToolConnection:
 
 class ScreenReader:
     """
-    Lightweight screen-capture + template-matching helper.
+    Screen-capture, template-matching, OCR, and pixel-analysis helper.
+
     Requires:  pip install opencv-python Pillow
+    Optional:  pip install pytesseract mss pywin32
+               (pytesseract also needs Tesseract-OCR installed on the system)
 
     By default captures the window of the process named in GAME_EXE.
     Falls back to full virtual desktop (all monitors) if window not found.
+
+    Key capabilities
+    ─────────────────
+    • screenshot(region)           – numpy BGR frame (mss ~5ms, PIL fallback)
+    • find_image(template, thresh) – OpenCV template match → (cx, cy, conf)
+    • find_any(templates)          – best match among several templates
+    • wait_for_image(templates)    – poll until an image appears or timeout
+    • get_pixel(x, y)              – single (R,G,B) pixel
+    • pixel_matches(x, y, color)   – colour-tolerance check
+    • read_text(region)            – OCR a screen region (pytesseract)
+    • read_number(region)          – parse a single integer/float from OCR
+    • find_color_region(color, …)  – locate a dominant colour blob
+    • detect_progress_bar(region)  – % fill of a coloured progress bar
+    • is_ui_element_visible(…)     – pixel-colour probe for a named UI state
+    • find_health_bar(region)      – estimate HP % from a red bar region
+    • wait_for_text(region, …)     – poll OCR until expected text appears
+    • classify_region(region)      – dominant-colour hue label for a region
+    • scan_for_color_change(…)     – detect any significant colour change
+    • capture_region_as_template() – save a screen area to a PNG file
+    • get_game_rect()              – (left,top,right,bottom) of game window
+    • relative_region(rx,ry,rw,rh) – convert 0–1 game-relative coords to pixels
     """
 
     GAME_EXE = "ethyrial"   # partial match against window title or process name
 
-    def __init__(self):
+    def __init__(self, pid=None):
+        """
+        pid: If provided, only capture the game window belonging to this process.
+             Use the injected/instrumented game PID (conn._pid) so ScreenReader
+             focuses on the correct instance when multiple game windows exist.
+        """
         self._cv2       = None
         self._np        = None
         self._ImageGrab = None
         self._mss       = None
         self._win32gui  = None
+        self._pytesseract = None
         self._ready     = False
         self._game_hwnd = None
+        self._target_pid = pid
         self._init()
 
     def _init(self):
@@ -2080,6 +2473,18 @@ class ScreenReader:
                 print("[ScreenReader] Install mss or Pillow for screenshots.")
                 self._ready = False
                 return
+        # Optional: PIL ImageGrab for pixel reads even when mss is present
+        try:
+            from PIL import ImageGrab
+            self._ImageGrab = ImageGrab
+        except ImportError:
+            pass
+        # Optional: pytesseract for OCR
+        try:
+            import pytesseract
+            self._pytesseract = pytesseract
+        except ImportError:
+            pass  # OCR methods will warn when called
         # Try pywin32 first for reliable window rect; fall back to ctypes
         try:
             import win32gui
@@ -2088,15 +2493,38 @@ class ScreenReader:
         except ImportError:
             pass  # will use ctypes fallback in _find_game_window
 
+    def set_pid(self, pid):
+        """Set target PID and re-find the window. Use conn._pid or conn.pid for the injected game."""
+        self._target_pid = pid
+        self._game_hwnd = None
+        self._find_game_window()
+
+    def _hwnd_matches_pid(self, hwnd):
+        """True if the window belongs to self._target_pid."""
+        if not self._target_pid:
+            return True
+        try:
+            if self._win32gui:
+                import win32process
+                _, wpid = win32process.GetWindowThreadProcessId(hwnd)
+                return wpid == self._target_pid
+            import ctypes
+            from ctypes import wintypes
+            pid = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return pid.value == self._target_pid
+        except Exception:
+            return False
+
     def _find_game_window(self):
-        """Find the game window by title and cache its HWND."""
+        """Find the game window by title and (if pid set) by process ID. Cache HWND."""
         if self._win32gui:
             # pywin32 path — most reliable
             found = []
             def _cb(hwnd, _):
                 if self._win32gui.IsWindowVisible(hwnd):
                     title = self._win32gui.GetWindowText(hwnd).lower()
-                    if self.GAME_EXE.lower() in title:
+                    if self.GAME_EXE.lower() in title and self._hwnd_matches_pid(hwnd):
                         found.append(hwnd)
             self._win32gui.EnumWindows(_cb, None)
             self._game_hwnd = found[0] if found else None
@@ -2112,7 +2540,7 @@ class ScreenReader:
                 if u32.IsWindowVisible(hwnd):
                     buf = ctypes.create_unicode_buffer(256)
                     u32.GetWindowTextW(hwnd, buf, 256)
-                    if self.GAME_EXE.lower() in buf.value.lower():
+                    if self.GAME_EXE.lower() in buf.value.lower() and self._hwnd_matches_pid(hwnd):
                         found.append(hwnd)
                 return True
             u32.EnumWindows(WNDENUMPROC(_cb), 0)
@@ -2233,10 +2661,389 @@ class ScreenReader:
         """Return (R, G, B) of a single screen pixel."""
         if not self._ready:
             return (0, 0, 0)
-        img = self._ImageGrab.grab(bbox=(x, y, x + 1, y + 1))
-        return img.getpixel((0, 0))[:3]
+        if self._ImageGrab:
+            img = self._ImageGrab.grab(bbox=(x, y, x + 1, y + 1))
+            return img.getpixel((0, 0))[:3]
+        # mss-only fallback
+        shot = self.screenshot(region=(x, y, x + 1, y + 1))
+        if shot is not None:
+            bgr = shot[0, 0]
+            return (int(bgr[2]), int(bgr[1]), int(bgr[0]))
+        return (0, 0, 0)
 
     def pixel_matches(self, x, y, color, tolerance=15):
         """True if pixel at (x,y) is within *tolerance* of *color* (R,G,B)."""
         r, g, b = self.get_pixel(x, y)
         return all(abs(a - c) <= tolerance for a, c in zip((r, g, b), color))
+
+    # ── window helpers ──────────────────────────────────────────
+
+    def get_game_rect(self):
+        """Return (left, top, right, bottom) of the game window, or None."""
+        return self._game_rect()
+
+    def relative_region(self, rx, ry, rw, rh):
+        """
+        Convert game-window-relative fractions (0.0–1.0) to absolute pixel
+        coordinates (left, top, right, bottom).
+
+        Example — top-centre quarter of the game window:
+            region = sr.relative_region(0.25, 0.0, 0.5, 0.25)
+        """
+        rect = self._game_rect()
+        if rect is None:
+            return None
+        gl, gt, gr, gb = rect
+        gw = gr - gl
+        gh = gb - gt
+        l = int(gl + rx * gw)
+        t = int(gt + ry * gh)
+        r = int(gl + (rx + rw) * gw)
+        b = int(gt + (ry + rh) * gh)
+        return (l, t, r, b)
+
+    # ── OCR helpers ─────────────────────────────────────────────
+
+    def read_text(self, region=None, config="--psm 7", lang="eng"):
+        """
+        OCR the given screen region and return the raw string.
+        Requires pytesseract + Tesseract-OCR installed on the system.
+        ``region`` defaults to the full game window.
+        """
+        if self._pytesseract is None:
+            print("[ScreenReader] pytesseract not installed. "
+                  "Run: pip install pytesseract  (+ install Tesseract binary)")
+            return ""
+        shot = self.screenshot(region=region)
+        if shot is None:
+            return ""
+        # Scale up small regions for better OCR accuracy
+        h, w = shot.shape[:2]
+        if h < 40 or w < 80:
+            scale = max(2, 40 // max(h, 1))
+            shot = self._cv2.resize(shot, (w * scale, h * scale),
+                                    interpolation=self._cv2.INTER_CUBIC)
+        # Convert BGR→RGB for PIL
+        from PIL import Image as _PILImage
+        rgb = self._cv2.cvtColor(shot, self._cv2.COLOR_BGR2RGB)
+        pil_img = _PILImage.fromarray(rgb)
+        return self._pytesseract.image_to_string(pil_img, config=config, lang=lang).strip()
+
+    def read_number(self, region=None, config="--psm 7 -c tessedit_char_whitelist=0123456789./"):
+        """
+        OCR a region and parse the first int or float found.
+        Returns a float, or None if no number found.
+        """
+        text = self.read_text(region=region, config=config)
+        import re
+        m = re.search(r"[\d]+(?:[./][\d]+)?", text)
+        if m:
+            raw = m.group(0).replace("/", ".")
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+        return None
+
+    def wait_for_text(self, expected, region=None, timeout=10.0,
+                      interval=0.3, case_sensitive=False):
+        """
+        Poll OCR on *region* until *expected* text appears or *timeout* expires.
+        Returns the matched text string, or None on timeout.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            text = self.read_text(region=region)
+            cmp_text = text if case_sensitive else text.lower()
+            cmp_exp  = expected if case_sensitive else expected.lower()
+            if cmp_exp in cmp_text:
+                return text
+            time.sleep(interval)
+        return None
+
+    # ── colour / bar analysis ────────────────────────────────────
+
+    def find_color_region(self, color_bgr, tolerance=30, region=None, min_pixels=50):
+        """
+        Find the bounding box of pixels whose colour is within *tolerance* of
+        *color_bgr* (B, G, R).  Returns (cx, cy, w, h) of the bounding box,
+        or None if fewer than *min_pixels* match.
+        """
+        if not self._ready:
+            return None
+        shot = self.screenshot(region=region)
+        if shot is None:
+            return None
+        np = self._np
+        cv2 = self._cv2
+        lo = np.array([max(0, c - tolerance) for c in color_bgr], dtype=np.uint8)
+        hi = np.array([min(255, c + tolerance) for c in color_bgr], dtype=np.uint8)
+        mask = cv2.inRange(shot, lo, hi)
+        coords = cv2.findNonZero(mask)
+        if coords is None or len(coords) < min_pixels:
+            return None
+        x, y, w, h = cv2.boundingRect(coords)
+        ox = region[0] if region else (self._game_rect() or (0,))[0]
+        oy = region[1] if region else (self._game_rect() or (0, 0))[1]
+        return (ox + x + w // 2, oy + y + h // 2, w, h)
+
+    def detect_progress_bar(self, region, bar_color_bgr, bg_color_bgr=None,
+                            tolerance=40, axis="horizontal"):
+        """
+        Estimate the fill percentage (0–100) of a coloured progress bar inside
+        *region* (left, top, right, bottom).
+
+        *bar_color_bgr* – the filled-portion colour (B, G, R).
+        *bg_color_bgr*  – background / empty portion colour; if None any
+                          non-bar pixel is treated as background.
+        *axis*          – "horizontal" or "vertical".
+
+        Returns a float 0–100, or None on failure.
+        """
+        if not self._ready:
+            return None
+        shot = self.screenshot(region=region)
+        if shot is None:
+            return None
+        np = self._np
+        cv2 = self._cv2
+        lo = np.array([max(0, c - tolerance) for c in bar_color_bgr], dtype=np.uint8)
+        hi = np.array([min(255, c + tolerance) for c in bar_color_bgr], dtype=np.uint8)
+        mask = cv2.inRange(shot, lo, hi)
+        total = mask.shape[1] if axis == "horizontal" else mask.shape[0]
+        if total == 0:
+            return None
+        if axis == "horizontal":
+            col_sums = self._np.any(mask > 0, axis=0)
+            filled = int(self._np.sum(col_sums))
+        else:
+            row_sums = self._np.any(mask > 0, axis=1)
+            filled = int(self._np.sum(row_sums))
+        return min(100.0, (filled / total) * 100.0)
+
+    def find_health_bar(self, region=None, hp_color_bgr=(0, 40, 180),
+                        tolerance=60):
+        """
+        Estimate the HP percentage shown by a red health bar in *region*.
+        Defaults to a medium-red BGR value; adjust *hp_color_bgr* as needed.
+        Returns 0–100 float, or None on failure.
+        """
+        if region is None:
+            # Default to top-left quarter of the game window (typical HUD position)
+            region = self.relative_region(0.0, 0.0, 0.35, 0.12)
+        return self.detect_progress_bar(
+            region,
+            bar_color_bgr=hp_color_bgr,
+            tolerance=tolerance,
+            axis="horizontal",
+        )
+
+    def is_ui_element_visible(self, probe_points, expected_color_bgr,
+                              tolerance=20, require_all=False):
+        """
+        Probe one or more pixel coordinates for an expected colour to detect
+        whether a UI element (popup, window, button) is currently visible.
+
+        *probe_points*       – list of (x, y) absolute screen coords.
+        *expected_color_bgr* – (B, G, R) expected colour.
+        *require_all*        – if True all probes must match; else any match.
+        Returns True/False.
+        """
+        if not self._ready or not probe_points:
+            return False
+        results = []
+        shot = self.screenshot()
+        if shot is None:
+            return False
+        rect = self._game_rect()
+        ox = rect[0] if rect else 0
+        oy = rect[1] if rect else 0
+        for sx, sy in probe_points:
+            lx = sx - ox
+            ly = sy - oy
+            if lx < 0 or ly < 0 or lx >= shot.shape[1] or ly >= shot.shape[0]:
+                results.append(False)
+                continue
+            bgr = shot[ly, lx]
+            b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
+            eb, eg, er = expected_color_bgr
+            match = (abs(b - eb) <= tolerance and
+                     abs(g - eg) <= tolerance and
+                     abs(r - er) <= tolerance)
+            results.append(match)
+        return all(results) if require_all else any(results)
+
+    def classify_region(self, region=None):
+        """
+        Return the dominant hue label for the *region*:
+        "red", "green", "blue", "yellow", "cyan", "magenta", "white",
+        "black", or "grey".  Useful for quickly checking UI states.
+        """
+        if not self._ready:
+            return "unknown"
+        shot = self.screenshot(region=region)
+        if shot is None:
+            return "unknown"
+        np = self._np
+        cv2 = self._cv2
+        small = cv2.resize(shot, (32, 32))
+        hsv   = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        h = int(np.median(hsv[:, :, 0]))
+        s = int(np.median(hsv[:, :, 1]))
+        v = int(np.median(hsv[:, :, 2]))
+        if v < 40:
+            return "black"
+        if s < 30:
+            return "white" if v > 200 else "grey"
+        if h < 15 or h >= 165:
+            return "red"
+        if h < 30:
+            return "yellow"
+        if h < 75:
+            return "green"
+        if h < 105:
+            return "cyan"
+        if h < 135:
+            return "blue"
+        return "magenta"
+
+    def scan_for_color_change(self, region, reference_frame=None,
+                              threshold=0.05):
+        """
+        Compare *region* against *reference_frame* (numpy BGR array).
+        If *reference_frame* is None, captures a fresh baseline and returns it.
+        On subsequent calls returns (changed: bool, new_frame).
+
+        *threshold* – fraction of pixels that must change (0–1) to flag True.
+        Useful for detecting animation end / gather complete indicators.
+        """
+        if not self._ready:
+            return (False, None)
+        current = self.screenshot(region=region)
+        if current is None:
+            return (False, reference_frame)
+        if reference_frame is None:
+            return (False, current)
+        np = self._np
+        cv2 = self._cv2
+        if current.shape != reference_frame.shape:
+            ref_r = cv2.resize(reference_frame,
+                               (current.shape[1], current.shape[0]))
+        else:
+            ref_r = reference_frame
+        diff = cv2.absdiff(current, ref_r)
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+        changed_ratio = float(np.sum(mask > 0)) / max(1, mask.size)
+        return (changed_ratio > threshold, current)
+
+    # ── template capture utility ─────────────────────────────────
+
+    def capture_region_as_template(self, region, output_path):
+        """
+        Capture *region* and save it as a PNG template file.
+        Use this to create templates for find_image() calls.
+
+        Example:
+            sr = ScreenReader()
+            sr.capture_region_as_template(
+                sr.relative_region(0.4, 0.45, 0.2, 0.08),
+                "templates/gather_complete.png"
+            )
+        """
+        if not self._ready:
+            return False
+        shot = self.screenshot(region=region)
+        if shot is None:
+            return False
+        self._cv2.imwrite(str(output_path), shot)
+        print(f"[ScreenReader] Template saved: {output_path}")
+        return True
+
+    # ── high-level game-state detectors ─────────────────────────
+    #
+    # These are heuristic helpers that combine the primitives above.
+    # Calibrate the probe coords / colours for your monitor resolution
+    # by using capture_region_as_template() to inspect regions.
+
+    def is_gather_animation_active(self, gather_region=None):
+        """
+        Heuristic: returns True while the gathering progress animation is
+        running.  Default implementation looks for the golden/yellow gather-
+        progress arc that appears on screen during gathering in Ethyrial.
+
+        Pass *gather_region* = a (l,t,r,b) box around the progress indicator,
+        or use capture_region_as_template() to identify the right area first.
+        Falls back to checking for any yellow-dominant pixel region.
+        """
+        if gather_region is None:
+            gather_region = self.relative_region(0.35, 0.55, 0.30, 0.15)
+        dominant = self.classify_region(gather_region)
+        return dominant in ("yellow", "green")
+
+    def is_loot_window_open(self, probe_color_bgr=(30, 160, 220), tolerance=35):
+        """
+        Heuristic: returns True if a loot/container window appears to be open
+        on screen, by looking for the characteristic window-title colour band.
+
+        Default colour is the teal/blue header stripe of Ethyrial loot windows.
+        Calibrate *probe_color_bgr* (BGR) by using get_pixel() on the header.
+        """
+        if not self._ready:
+            return False
+        region = self.relative_region(0.3, 0.2, 0.4, 0.6)
+        return self.find_color_region(
+            probe_color_bgr, tolerance=tolerance, region=region, min_pixels=30
+        ) is not None
+
+    def detect_cast_bar(self, region=None):
+        """
+        Detect a casting/channelling bar.  Returns its fill % (0–100), or None.
+        Default region covers the bottom-centre of the game window where
+        Ethyrial typically renders the cast bar.
+        """
+        if region is None:
+            region = self.relative_region(0.3, 0.82, 0.4, 0.06)
+        # Cast bar is typically a bright-blue/purple hue
+        pct = self.detect_progress_bar(region,
+                                        bar_color_bgr=(200, 100, 50),
+                                        tolerance=60)
+        return pct
+
+    def wait_for_gather_complete(self, timeout=25.0, poll=0.2,
+                                  gather_region=None, stop_event=None):
+        """
+        Poll until the gather animation disappears (i.e. is_gather_animation_active
+        returns False after having been True), or until *timeout* expires.
+
+        Returns True if gather completed, False on timeout or stop_event.
+        This is a screen-validated alternative to a fixed sleep.
+        """
+        deadline = time.time() + timeout
+        seen_active = False
+        while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            active = self.is_gather_animation_active(gather_region)
+            if active:
+                seen_active = True
+            elif seen_active:
+                return True      # animation was active, now gone → complete
+            time.sleep(poll)
+        return False
+
+    def wait_for_combat_end(self, conn, timeout=120.0, poll=0.5,
+                             stop_event=None):
+        """
+        Wait until conn.in_combat() returns False, or timeout.
+        Also checks stop_event if provided.
+        Returns True when combat ended, False on timeout/stop.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            if not conn.in_combat():
+                return True
+            time.sleep(poll)
+        return False

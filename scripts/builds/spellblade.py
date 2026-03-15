@@ -5,8 +5,8 @@
 ║  Playstyle: Imbue weapon → burst combo → shield → repeat     ║
 ║                                                              ║
 ║  COMBO LOGIC:                                                ║
-║    1. Imbue Weapon: Arcane (maintain always)                 ║
-║    2. Arcane Blitz (gap close / opener from range)           ║
+║    1. Imbue Weapon: Arcane (permanent — cast once)           ║
+║    2. Leyline Brilliance (30 min buff — cast once)           ║
 ║    3. Arcane Slashes (spam — 2s CD, main damage)             ║
 ║    4. Arcane Wave (5s CD, melee cleave)                      ║
 ║    5. Arcane Shockwave (6s CD, point-blank AOE)              ║
@@ -14,25 +14,38 @@
 ║    7. Siphon Instability (10s CD, mana/resource drain)       ║
 ║                                                              ║
 ║  DEFENSE:                                                    ║
-║    - Arcanic Bulwark — magic shield (20s CD)                 ║
+║    - Arcanic Bulwark — INVULNERABLE for 3s (20s CD)         ║
 ║    - Counterspell — interrupt casters (12s CD)               ║
+║    # Arcane Blitz — ground-target teleport (18s CD) DISABLED ║
 ║                                                              ║
 ║  BUFF:                                                       ║
-║    - Imbue Weapon: Arcane (maintain at all times)            ║
-║    - Leyline Brilliance (passive aura)                       ║
+║    - Imbue Weapon: Arcane (permanent — only cast if missing) ║
+║    - Leyline Brilliance (30 min — only cast if missing)      ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
 # ═══════════════════════════════════════════════════════════
-#  THRESHOLDS
-# ═══════════════��═══════════════════════════════════════════
+#  DISCIPLINE LEVEL CHECKS
+# ═══════════════════════════════════════════════════════════
+# Set your level; skills in SKILL_LEVEL_REQUIREMENTS are blocked until you have the level.
+# TODO: Add your discipline's skill: level pairs below.
+DISCIPLINE_LEVEL = 25
+SKILL_LEVEL_REQUIREMENTS = {
+    # "Skill Name": 5,
+    # "Other Skill": 10,
+}
+IGNORED_SPELLS = {s for s, req in SKILL_LEVEL_REQUIREMENTS.items() if DISCIPLINE_LEVEL < req}
 
-HEAL_HP        = 50          # Heal/pot below this
-DEFENSIVE_HP   = 40          # Pop Bulwark below this
-EMERGENCY_HP   = 20          # All defensives + run
-REST_HP        = 80          # Rest out of combat below this
-REST_MP        = 60          # Meditate out of combat below this
-MANA_CONSERVE  = 20          # Stop using big spells below this MP%
+# ═══════════════════════════════════════════════════════════
+#  THRESHOLDS
+# ═══════════════════════════════════════════════════════════
+
+HEAL_HP        = 50
+DEFENSIVE_HP   = 40
+EMERGENCY_HP   = 20
+REST_HP        = 80
+REST_MP        = 60
+MANA_CONSERVE  = 20
 
 # ═══════════════════════════════════════════════════════════
 #  TICK RATE
@@ -42,43 +55,61 @@ TICK_RATE = 0.25
 GCD       = 0.3
 
 # ═══════════════════════════════════════════════════════════
-#  BUFFS (maintain at all times)
+#  BUFFS — only cast if not already active
 # ═══════════════════════════════════════════════════════════
 
 BUFFS = [
-    "Imbue Weapon: Arcane",      # Main buff — always active
-    "Leyline Brilliance",        # Passive aura
+    "Imbue Weapon: Arcane",
+    "Leyline Brilliance",
 ]
 
+BUFF_CONFIG = {
+    "Imbue Weapon: Arcane": {
+        "permanent": True,
+        "check_before_cast": True,
+        "recast_interval": 0,
+    },
+    "Leyline Brilliance": {
+        "permanent": False,
+        "check_before_cast": True,
+        "duration": 1800,
+        "recast_interval": 1800,
+    },
+}
+
 # ═══════════════════════════════════════════════════════════
-#  OPENER (from range → into melee)
+#  OPENER
 # ═══════════════════════════════════════════════════════════
 
 OPENER = [
-    "Imbue Weapon: Arcane",      # Ensure imbue is up
-    "Arcane Blitz",              # Gap close (18s CD, range 7)
-    "Arcane Shockwave",          # PB AOE on arrival
-    "Arcane Slashes",            # Start slashing
+    "Arcane Shockwave",
+    "Arcane Slashes",
 ]
 
 # ═══════════════════════════════════════════════════════════
 #  GAP CLOSERS
 # ═══════════════════════════════════════════════════════════
 
-GAP_CLOSERS = [
-    "Arcane Blitz",              # 18s CD, range 7
+GAP_CLOSERS = []
+
+# ═══════════════════════════════════════════════════════════
+#  ESCAPE
+# ═══════════════════════════════════════════════════════════
+
+ESCAPE_SPELLS = [
+    # "Arcane Blitz",            # Ground-target teleport (18s CD) — disabled
 ]
 
 # ═══════════════════════════════════════════════════════════
-#  ROTATION (priority order — first available wins)
+#  ROTATION (priority order)
 # ═══════════════════════════════════════════════════════════
 
 ROTATION = [
-    "Supernova",                 # Big AOE burst (12s CD) — use on CD
-    "Arcane Shockwave",          # PB AOE (6s CD)
-    "Arcane Wave",               # Melee cleave (5s CD)
-    "Siphon Instability",        # Drain (10s CD)
-    "Arcane Slashes",            # Main filler (2s CD)
+    "Supernova",
+    "Arcane Shockwave",
+    "Arcane Wave",
+    "Siphon Instability",
+    "Arcane Slashes",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -86,10 +117,10 @@ ROTATION = [
 # ═══════════════════════════════════════════════════════════
 
 AOE_SPELLS = [
-    "Supernova",                 # Big AOE
-    "Arcane Shockwave",          # PB AOE
-    "Arcane Wave",               # Cleave
-    "Arcane Slashes",            # Filler
+    "Supernova",
+    "Arcane Shockwave",
+    "Arcane Wave",
+    "Arcane Slashes",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -97,16 +128,16 @@ AOE_SPELLS = [
 # ═══════════════════════════════════════════════════════════
 
 DEFENSIVE_SPELLS = [
-    "Arcanic Bulwark",           # Magic shield (20s CD)
-    "Counterspell",              # Interrupt (12s CD)
+    "Arcanic Bulwark",
+    "Counterspell",
+    # "Arcane Blitz",            # Teleport escape — disabled
 ]
 
-DEFENSIVE_HP = 40
 DEFENSIVE_TRIGGER_HP = 20
 
 DEFENSIVE_COMBO = [
-    "Arcanic Bulwark",           # Shield first
-    "Arcane Slashes",            # Keep DPS while shielded
+    "Arcanic Bulwark",
+    # "Arcane Blitz",            # Teleport out while invuln — disabled
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -114,7 +145,7 @@ DEFENSIVE_COMBO = [
 # ═══════════════════════════════════════════════════════════
 
 INTERRUPT_SPELLS = [
-    "Counterspell",              # 12s CD, range 5
+    "Counterspell",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -125,7 +156,7 @@ REST_SPELL = "Rest"
 MEDITATION_SPELL = "Leyline Meditation"
 
 # ═══════════════════════════════════════════════════════════
-#  STACKS (Spellblade doesn't use stacks)
+#  STACKS
 # ═══════════════════════════════════════════════════════════
 
 MAX_STACKS = 0
@@ -137,15 +168,14 @@ STACK_DECAY_TIME = 0
 
 SPELL_INFO = {
 
-    # ── Buffs ──
-
     "Imbue Weapon: Arcane": {
         "type": "buff",
         "cast_time": 1.0,
         "cooldown": 0,
         "mana_cost": 0,
-        "duration": 600,
+        "duration": 0,
         "targets_self": True,
+        "permanent": True,
         "generates_stacks": 0,
         "consumes_stacks": 0,
     },
@@ -155,25 +185,23 @@ SPELL_INFO = {
         "cast_time": 0,
         "cooldown": 0,
         "mana_cost": 0,
-        "duration": 600,
+        "duration": 1800,
         "targets_self": True,
         "generates_stacks": 0,
         "consumes_stacks": 0,
     },
 
-    # ── Gap Closer ──
-
-    "Arcane Blitz": {
-        "type": "gap_closer",
-        "cast_time": 0,
-        "cooldown": 18,
-        "mana_cost": 5,
-        "range": 7,
-        "generates_stacks": 0,
-        "consumes_stacks": 0,
-    },
-
-    # ── Main Rotation ──
+    # "Arcane Blitz": {
+    #     "type": "escape",
+    #     "cast_time": 0,
+    #     "cooldown": 18,
+    #     "mana_cost": 5,
+    #     "range": 7,
+    #     "ground_target": True,
+    #     "use_for": "escape",
+    #     "generates_stacks": 0,
+    #     "consumes_stacks": 0,
+    # },
 
     "Arcane Slashes": {
         "type": "damage",
@@ -225,16 +253,15 @@ SPELL_INFO = {
         "consumes_stacks": 0,
     },
 
-    # ── Defensive ──
-
     "Arcanic Bulwark": {
-        "type": "shield",
+        "type": "invulnerable",
         "cast_time": 0,
         "cooldown": 20,
         "mana_cost": 5,
-        "duration": 8,
+        "duration": 3,
         "range": 100,
         "targets_self": True,
+        "priority": "emergency",
         "generates_stacks": 0,
         "consumes_stacks": 0,
     },
@@ -256,8 +283,19 @@ SPELL_INFO = {
 
 BUFF_SAFETY = {
     "Imbue Weapon: Arcane": {
-        "warn_before_expiry": 10.0,
+        "warn_before_expiry": 0,
         "warn_hp_below": 100,
-        "danger": "Weapon imbue down! DPS crippled!",
+        "danger": "Weapon imbue down! Recast immediately!",
     },
+}
+
+# ════════════════════════════���══════════════════════════════
+#  IGNORED SPELLS — shared utility, never used in combat
+# ═══════════════════════════════════════════════════════════
+
+IGNORED_SPELLS = {
+    "Summon Hallowed Ghost",
+    "Siphon Shadow Energies",
+    "Earthglow",
+    "Light of the Keeper",
 }

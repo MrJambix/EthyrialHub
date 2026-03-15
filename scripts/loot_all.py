@@ -1,7 +1,6 @@
 """
 Auto-Loot — loots NEW corpse windows when they appear.
-⚠ Known issue: LOOT_ALL also hits quest bag panels (DLL limitation).
-   Quest items may move to regular inventory. Toggle loot off if this bothers you.
+Spams LOOT_ALL multiple times per window to grab everything quickly.
 Run from EthyTool dashboard. Stop the script to quit.
 """
 import time
@@ -15,6 +14,8 @@ except NameError:
 
 POLL_FAST = 0.15
 POLL_IDLE = 0.4
+LOOT_SPAM_COUNT = 8   # spam LOOT_ALL this many times per new window
+LOOT_SPAM_DELAY = 0.05  # 50ms between each
 
 looted_total = 0
 
@@ -23,16 +24,13 @@ print("=" * 60)
 print("  Auto-Loot  (stop script to quit)")
 print("=" * 60)
 print("")
-print("  ⚠ LOOT_ALL also affects quest bag panels (DLL limitation).")
-print("  Quest items may move to regular inventory.")
-print("")
 
 try:
     baseline = int(conn._send("LOOT_WINDOW_COUNT") or "0")
 except (ValueError, TypeError):
     baseline = 0
 
-print(f"  Baseline: {baseline} window(s) — watching for NEW windows only")
+print(f"  Baseline: {baseline} corpse loot window(s) — watching for NEW")
 print("")
 
 prev = baseline
@@ -45,13 +43,20 @@ while not stop_event.is_set():
 
     if current > prev and current > baseline:
         new_count = current - prev
-        raw_loot = conn._send("LOOT_ALL")
+        ok_count = 0
+        for _ in range(LOOT_SPAM_COUNT):
+            if stop_event.is_set():
+                break
+            raw = conn._send("LOOT_ALL")
+            if raw and raw.startswith("OK"):
+                ok_count += 1
+            time.sleep(LOOT_SPAM_DELAY)
 
-        if raw_loot and raw_loot.startswith("OK"):
+        if ok_count > 0:
             looted_total += new_count
-            print(f"  💰 Looted {new_count} new window(s)  [total: {looted_total}]")
+            print(f"  💰 Looted {new_count} window(s)  [OK={ok_count}/{LOOT_SPAM_COUNT} total: {looted_total}]")
         else:
-            print(f"  ! LOOT_ALL: {raw_loot!r}")
+            print(f"  ! LOOT_ALL failed (no corpse windows?)")
 
         try:
             current = int(conn._send("LOOT_WINDOW_COUNT") or "0")
