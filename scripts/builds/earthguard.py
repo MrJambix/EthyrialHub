@@ -79,6 +79,18 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+DOT_SPELLS      = {}
+DOT_REFRESH_AT  = 2.0
+PROC_BUFFS      = ["Imbue Shield: Earth", "Solid Core", "Geomantic Spikes", "Earthly Absorption"]
+BURST_PHASE     = {
+    "enabled": True, "cd_trigger": "Earthshaker", "min_stacks": 0,
+    "spells": ["Solid Core", "Earthshaker", "Seismic Slam", "Geomantic Spikes", "Aftershock"],
+}
+INTERRUPT_SPELL  = "Seismic Slam"
+CC_SPELLS        = ["Taunt", "Seismic Slam"]
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Taunt"]
+
 SPELL_INFO = {
     "Imbue Shield: Earth": {
         "type": "buff",

@@ -69,6 +69,66 @@ REST_SPELL = "Rest"
 MEDITATION_SPELL = "Rest"       # Druids use Rest for mana (no Leyline Meditation)
 MEDITATION_MANA_PCT = 0         # Disable in-combat meditation (Rest is 20s channel, OOC only)
 
+# ══════════════════════════════════════════════════════════════
+#  DOT / PERIODIC EFFECTS
+#  Ensnaring Spore applies a root-DoT: track it so we reapply
+#  before it falls off on a tough fight.
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS     = {
+    "Ensnaring Spore": 8.0,   # 8s root/debuff — reapply when < 2s left
+}
+DOT_REFRESH_AT = 2.0
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = [
+    "Bloom",       # Keep Bloom active — big buff/damage modifier
+    "Ironbark",    # Armor buff — track its active window
+]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE
+#  Druid burst: Bloom up → Narun's Blast (big hit) → Flourish
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Narun's Blast",
+    "min_stacks": 0,
+    "spells": [
+        "Bloom",
+        "Narun's Blast",
+        "Flourish",
+        "Seed of Silcress",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT
+#  Ensnaring Spore roots target — use as soft interrupt.
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = "Ensnaring Spore"
+
+# ══════════════════════════════════════════════════════════════
+#  CC SPELLS
+# ══════════════════════════════════════════════════════════════
+
+CC_SPELLS = ["Ensnaring Spore"]
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+
+ANTI_KITE_SPELLS = ["Ensnaring Spore"]
+
+EMERGENCY_HP = 22
+
 SPELL_INFO = {
     "Bloom": {"type": "buff", "cast_time": 0, "cooldown": 30, "mana_cost": 6, "range": 10},
     "Bolt of Narun": {"type": "damage", "cast_time": 1.46, "cooldown": 0, "mana_cost": 6, "range": 10},

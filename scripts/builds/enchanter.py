@@ -69,6 +69,67 @@ REST_SPELL = "Rest"
 MEDITATION_SPELL = "Leyline Meditation"
 MEDITATION_MANA_PCT = 10  # Use Leyline Meditation in combat when mana ≤ 10%
 
+# ══════════════════════════════════════════════════════════════
+#  DOT / PERIODIC EFFECTS
+#  Debilitating Waters: 60s CD debuff — track reapplication
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS     = {
+    "Debilitating Waters": 12.0,  # debuff lasts ~12s — reapply when it drops
+}
+DOT_REFRESH_AT = 2.0
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = [
+    "Stormshield",
+    "Imbue Mind: Clarity",
+    "Gust of Alacrity",
+    "Imbue Body: Streaming Winds",
+]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE
+#  Enchanter burst: Stormshield up → Storm of Haste → Tempest
+#  (Tempest 6s channel = high sustained DPS window)
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Storm of Haste",
+    "min_stacks": 0,
+    "spells": [
+        "Stormshield",
+        "Storm of Haste",
+        "Debilitating Waters",
+        "Tempest",
+        "Stormbolt",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT  — Enchanters have no hard interrupt; use Tempest
+#  as a disruptive AoE channel pseudo-interrupt.
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = None   # Update when a proper interrupt spell is available
+
+# ══════════════════════════════════════════════════════════════
+#  CC SPELLS
+# ══════════════════════════════════════════════════════════════
+
+CC_SPELLS = ["Debilitating Waters"]
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Debilitating Waters"]
+EMERGENCY_HP     = 25
+
 SPELL_INFO = {
     "Storm of Haste": {"type": "damage", "cast_time": 0, "cooldown": 30, "mana_cost": 30, "range": 10},
     "Stormshield": {"type": "shield", "cast_time": 0, "cooldown": 18, "mana_cost": 15, "duration": 18, "targets_self": True},

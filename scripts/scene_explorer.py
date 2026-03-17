@@ -30,15 +30,6 @@ FONT_B = "Segoe UI Semibold"
 FONT_M = "Cascadia Code"
 
 
-def parse_kv(s):
-    d = {}
-    for part in (s or "").split("|"):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            d[k.strip()] = v.strip()
-    return d
-
-
 def parse_scene_dump(raw):
     """Parse SCENE_DUMP output into list of (path, name, depth)."""
     if not raw or raw.startswith("ERROR"):
@@ -62,27 +53,6 @@ def parse_scene_dump(raw):
         path = "/".join(path_parts)
         stack.append((name, depth))
         result.append({"path": path, "name": name, "depth": depth})
-    return result
-
-
-def parse_scene_all(raw):
-    """Parse SCENE_ALL output into list of entity dicts."""
-    if not raw or raw in ("NONE", "NO_ENTITY_MANAGER", "NOT_INITIALIZED"):
-        return []
-    return [parse_kv(e) for e in raw.split("###") if e.strip()]
-
-
-def parse_scene_addresses(raw):
-    """Parse SCENE_ADDRESSES output into list of entity dicts with ptr, class, etc."""
-    if not raw or raw.startswith("NO_") or raw.startswith("ERROR"):
-        return []
-    result = []
-    for part in raw.split("###"):
-        if not part.strip():
-            continue
-        d = parse_kv(part)
-        if d and ("ptr" in d or "uid" in d):
-            result.append(d)
     return result
 
 
@@ -309,9 +279,8 @@ class SceneExplorerUI:
             self.status.configure(text=f"Found uid={uid} in list")
         else:
             # Not in list — fetch via ENTITY_BY_UID and add as pinned
-            raw = self.conn._send(f"ENTITY_BY_UID {uid}") or ""
-            if raw and raw not in ("NOT_FOUND", "INVALID_UID", "NO_ENTITY_MANAGER"):
-                d = parse_kv(raw)
+            d = self.conn.get_entity_by_uid(uid)
+            if d:
                 d["class"] = self._locked_entity.get("class", "")
                 self._pinned_entity = d
                 self._populate_entities()
@@ -333,12 +302,8 @@ class SceneExplorerUI:
                 except tk.TclError:
                     pass
                 return
-            raw = self.conn._send("ENTITY_UNDER_MOUSE") or ""
-            if raw in ("NONE", "NO_INPUT", "IL2CPP_NOT_AVAILABLE"):
-                self.hover_label.configure(text="No entity under cursor", fg=TEXT_DIM)
-                self._locked_entity = None
-            elif raw and "uid=" in raw:
-                d = parse_kv(raw)
+            d = self.conn.entity_under_mouse()
+            if d:
                 name = d.get("name") or d.get("class") or "?"
                 cls = d.get("class", "")
                 uid = d.get("uid", "")
@@ -348,7 +313,7 @@ class SceneExplorerUI:
                 self.hover_label.configure(text=txt, fg=GREEN)
                 self._locked_entity = d
             else:
-                self.hover_label.configure(text="Move mouse over entity in game...", fg=TEXT_DIM)
+                self.hover_label.configure(text="No entity under cursor", fg=TEXT_DIM)
                 self._locked_entity = None
         except Exception:
             pass
@@ -365,7 +330,7 @@ class SceneExplorerUI:
         depth = max(2, min(10, depth))
         self.status.configure(text="Loading Unity hierarchy...")
         self.win.update()
-        raw = self.conn._send(f"SCENE_DUMP_{depth}") or ""
+        raw = self.conn.scene_dump(depth)
         self._hierarchy_data = parse_scene_dump(raw)
         self._populate_hierarchy()
         err = raw[:80] if raw and not self._hierarchy_data and "ROOTS=" not in raw else ""
@@ -374,11 +339,9 @@ class SceneExplorerUI:
     def _refresh_entities(self):
         self.status.configure(text="Loading game entities...")
         self.win.update()
-        raw = self.conn._send("SCENE_ADDRESSES") or ""
-        self._entities_data = parse_scene_addresses(raw)
+        self._entities_data = self.conn.get_scene_addresses()
         if not self._entities_data:
-            raw = self.conn._send("SCENE_ALL") or ""
-            self._entities_data = parse_scene_all(raw)
+            self._entities_data = self.conn.get_scene()
         self._populate_entities()
         self.status.configure(text=f"Entities: {len(self._entities_data)}")
 

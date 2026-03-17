@@ -162,6 +162,18 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+DOT_SPELLS      = {}
+DOT_REFRESH_AT  = 2.0
+PROC_BUFFS      = ["Imbue Weapon: Arcane", "Leyline Brilliance", "Arcanic Bulwark"]
+BURST_PHASE     = {
+    "enabled": True, "cd_trigger": "Supernova", "min_stacks": 0,
+    "spells": ["Arcanic Bulwark", "Supernova", "Arcane Shockwave", "Arcane Wave", "Siphon Instability", "Arcane Slashes"],
+}
+INTERRUPT_SPELL  = "Counterspell"
+CC_SPELLS        = ["Counterspell"]
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = []
+
 # ═══════════════════════════════════════════════════════════
 #  SPELL INFO
 # ═══════════════════════════════════════════════════════════

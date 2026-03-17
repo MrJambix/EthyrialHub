@@ -100,6 +100,57 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+# ══════════════════════════════════════════════════════════════
+#  DOT TRACKING — durations for the BuffTracker
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS = {
+    "Mark Of Subversion": 12.0,  # 12s DoT — refresh before it drops
+    "Corrupt Mind":       15.0,  # 15s DoT — instant filler, keep up
+    "Spiteful Shadows":   10.0,  # 10s AoE DoT — refresh every ~8s
+}
+DOT_REFRESH_AT = 2.0
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = [
+    "Shadow Armor",
+    "Embrace Shadow",
+]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE — all big CDs aligned
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Shadow Ball",
+    "min_stacks": 0,
+    "spells": [
+        "Shadow Ball",
+        "Banish to Shadow",
+        "Spiteful Shadows",
+        "Shadowblast",
+        "Mark Of Subversion",
+        "Corrupt Mind",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = "Banish to Shadow"
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Banish to Shadow"]
+
 SPELL_INFO = {
     "Shadowbolt": {
         "type": "damage",

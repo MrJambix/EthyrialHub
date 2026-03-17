@@ -86,6 +86,20 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+DOT_SPELLS      = {
+    "Mindshatter": 10.0,   # mental DoT — keep up for sustained DPS
+}
+DOT_REFRESH_AT  = 2.0
+PROC_BUFFS      = ["Mirage", "Mantra of Swiftness"]
+BURST_PHASE     = {
+    "enabled": True, "cd_trigger": "Mirage", "min_stacks": 0,
+    "spells": ["Mirage", "Mindshatter", "Panic", "Phantom Bolt", "Power Spike"],
+}
+INTERRUPT_SPELL  = "Panic"
+CC_SPELLS        = ["Panic", "Mindshatter"]
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Panic"]
+
 SPELL_INFO = {
     "Power Spike": {
         "type": "damage",

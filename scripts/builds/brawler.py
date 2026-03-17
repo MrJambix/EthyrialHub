@@ -78,6 +78,18 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+DOT_SPELLS      = {}
+DOT_REFRESH_AT  = 2.0
+PROC_BUFFS      = ["Combative Focus"]
+BURST_PHASE     = {
+    "enabled": True, "cd_trigger": "Combative Focus", "min_stacks": 0,
+    "spells": ["Combative Focus", "Knockout", "Fierce Uppercut", "Powerful Cross", "Fast Hook", "Horizontal Kick"],
+}
+INTERRUPT_SPELL  = "Horizontal Kick"
+CC_SPELLS        = ["Horizontal Kick", "Brawler's Rush"]
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Brawler's Rush", "Horizontal Kick"]
+
 SPELL_INFO = {
     "Quick Jab": {
         "type": "damage",

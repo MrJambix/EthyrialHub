@@ -265,3 +265,49 @@ IGNORED_SPELLS = {
     "Toxic Cleanse",
     "Adrenaline Rush",   # defensive only — handled by do_defend(), not rotation
 }
+
+# ══════════════════════════════════════════════════════════════
+#  DOT TRACKING
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS = {
+    "Envenom": 8.0,   # poison DoT — reapply every ~6s (before 2s window)
+}
+DOT_REFRESH_AT = 2.0
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = ["Viper's Agility", "Adrenaline Rush"]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE — when Concealed Weapon + Poison Vial align
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Concealed Weapon",
+    "min_stacks": 0,
+    "spells": [
+        "Envenom",
+        "Poison Vial",
+        "Concealed Weapon",
+        "Poison Strike",
+        "Ruthless Shiv",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = "Concealed Weapon"
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Concealed Weapon", "Poison Strike"]
+EMERGENCY_HP     = 20

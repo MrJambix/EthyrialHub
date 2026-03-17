@@ -26,9 +26,10 @@ SKILL_LEVEL_REQUIREMENTS = {
 # Spells to skip — built from level (blocks Spiritbeast's Wrath until lv 20, etc.)
 # Nature Arrows: toggle spell, not a rotation filler — ignore globally in ethytool_lib too
 # Summons: never auto-cast in combat
+# Recall Pet: pulls pet back, breaks combat flow — never use in rotation
 IGNORED_SPELLS = {
     s for s, req in SKILL_LEVEL_REQUIREMENTS.items() if SPIRITUALISM_LEVEL < req
-} | {"Nature Arrows", "Summon Spirit Alpha", "Summon Spirit Cub", "Summon Spirit Wolf"}
+} | {"Nature Arrows", "Summon Spirit Alpha", "Summon Spirit Cub", "Summon Spirit Wolf", "Recall Pet"}
 
 HEAL_HP        = 70
 DEFENSIVE_HP   = 40
@@ -92,6 +93,63 @@ REST_SPELL = "Rest"
 REST_ENABLED = False             # Don't auto-use Rest; use manually
 MEDITATION_SPELL = "Rest"
 MEDITATION_MANA_PCT = 0
+
+# ══════════════════════════════════════════════════════════════
+#  DOT / PERIODIC EFFECTS
+#  Spiritroot Arrow applies a root — track it for uptime.
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS     = {
+    "Spiritroot Arrow": 6.0,   # root lasts ~6s — reapply before it drops
+}
+DOT_REFRESH_AT = 1.5
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = [
+    "Nature's Swiftness",     # +speed buff — window for burst
+]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE
+#  Ranger burst: Nature's Swiftness → Spiritbeast's Wrath → Spirit Shot
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Spiritbeast's Wrath",
+    "min_stacks": 0,
+    "spells": [
+        "Nature's Swiftness",
+        "Spiritbeast's Wrath",
+        "Spirit Shot",
+        "Spiritburst Arrow",
+        "Spiritlife Arrow",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT
+#  Spiritroot Arrow roots target — use as soft interrupt.
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = "Spiritroot Arrow"
+
+# ══════════════════════════════════════════════════════════════
+#  CC SPELLS
+# ══════════════════════════════════════════════════════════════
+
+CC_SPELLS = ["Spiritroot Arrow", "Spiritlife Arrow"]
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Spiritroot Arrow"]
+EMERGENCY_HP     = 25
 
 SPELL_INFO = {
     "Attack": {"type": "damage", "cast_time": 0, "cooldown": 1, "mana_cost": 0, "range": 25},

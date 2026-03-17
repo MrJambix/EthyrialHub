@@ -25,21 +25,14 @@ print("  Auto-Loot  (stop script to quit)")
 print("=" * 60)
 print("")
 
-try:
-    baseline = int(conn._send("LOOT_WINDOW_COUNT") or "0")
-except (ValueError, TypeError):
-    baseline = 0
+baseline = conn.get_loot_window_count()
 
 print(f"  Baseline: {baseline} corpse loot window(s) — watching for NEW")
 print("")
 
 prev = baseline
 while not stop_event.is_set():
-    try:
-        raw = conn._send("LOOT_WINDOW_COUNT")
-        current = int(raw) if raw else 0
-    except (ValueError, TypeError):
-        current = 0
+    current = conn.get_loot_window_count()
 
     if current > prev and current > baseline:
         new_count = current - prev
@@ -47,8 +40,8 @@ while not stop_event.is_set():
         for _ in range(LOOT_SPAM_COUNT):
             if stop_event.is_set():
                 break
-            raw = conn._send("LOOT_ALL")
-            if raw and raw.startswith("OK"):
+            n, _ = conn.loot_all()
+            if n > 0:
                 ok_count += 1
             time.sleep(LOOT_SPAM_DELAY)
 
@@ -58,10 +51,7 @@ while not stop_event.is_set():
         else:
             print(f"  ! LOOT_ALL failed (no corpse windows?)")
 
-        try:
-            current = int(conn._send("LOOT_WINDOW_COUNT") or "0")
-        except (ValueError, TypeError):
-            pass
+        current = conn.get_loot_window_count()
 
     if current < baseline:
         baseline = current

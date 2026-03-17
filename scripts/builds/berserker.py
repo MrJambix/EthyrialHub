@@ -256,3 +256,76 @@ IGNORED_SPELLS = {
     "Light of the Keeper",
     "Furious Charge",
 }
+
+# ══════════════════════════════════════════════════════════════
+#  DOT / PERIODIC EFFECTS
+#  Berserker has no traditional DoTs — skip.
+# ══════════════════════════════════════════════════════════════
+
+DOT_SPELLS    = {}   # {spell_name: duration_seconds}
+DOT_REFRESH_AT = 2.0
+
+# ══════════════════════════════════════════════════════════════
+#  PROC BUFFS — reactive buffs to watch for
+#  When these appear in PLAYER_BUFFS, adjust rotation priority.
+# ══════════════════════════════════════════════════════════════
+
+PROC_BUFFS = [
+    "Bloodlust",     # 20% leech — opportunistic burst window
+    "Undying Fury",  # invincibility — go all-in while active
+]
+
+# ══════════════════════════════════════════════════════════════
+#  BURST PHASE
+#  Trigger burst when Executioner's Blow is ready AND stacks ≥ 20.
+#  The burst window is: dump all stacks with Executioner's Blow,
+#  follow up with Staggering Shout to extend stun + free casts.
+# ══════════════════════════════════════════════════════════════
+
+BURST_PHASE = {
+    "enabled":    True,
+    "cd_trigger": "Executioner's Blow",  # burst when this spell is off CD
+    "min_stacks": 20,                    # require 20 fury stacks
+    "spells": [
+        "Executioner's Blow",
+        "Staggering Shout",
+        "Bloodlust",                     # leech during burst if available
+        "Heavy Blow",
+    ],
+}
+
+# ══════════════════════════════════════════════════════════════
+#  INTERRUPT
+#  Berserker uses Staggering Shout as a pseudo-interrupt (AoE stun).
+# ══════════════════════════════════════════════════════════════
+
+INTERRUPT_SPELL = "Staggering Shout"
+
+# ══════════════════════════════════════════════════════════════
+#  CC SPELLS
+# ══════════════════════════════════════════════════════════════
+
+CC_SPELLS = ["Staggering Shout", "Hamstring"]
+
+# ══════════════════════════════════════════════════════════════
+#  TARGET PRIORITY  (lower = higher priority)
+# ══════════════════════════════════════════════════════════════
+
+TARGET_PRIORITY = {
+    "boss":   1,
+    "elite":  2,
+    "rare":   3,
+    "normal": 4,
+}
+
+# ══════════════════════════════════════════════════════════════
+#  ANTI-KITE SPELLS — gap closers + roots to prevent being kited
+# ══════════════════════════════════════════════════════════════
+
+ANTI_KITE_SPELLS = ["Hamstring", "Staggering Shout"]
+
+# ══════════════════════════════════════════════════════════════
+#  EMERGENCY HP — switch to pure survival below this %
+# ══════════════════════════════════════════════════════════════
+
+EMERGENCY_HP = 20

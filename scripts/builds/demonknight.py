@@ -79,6 +79,18 @@ MEDITATION_SPELL = "Leyline Meditation"
 MAX_STACKS = 0
 STACK_DECAY_TIME = 0
 
+DOT_SPELLS      = {}
+DOT_REFRESH_AT  = 2.0
+PROC_BUFFS      = ["Might of Barlon", "Soul Link"]
+BURST_PHASE     = {
+    "enabled": True, "cd_trigger": "Void Surge", "min_stacks": 0,
+    "spells": ["Might of Barlon", "Void Surge", "Demon Whirlwind", "Leech Strike", "Soul Rend"],
+}
+INTERRUPT_SPELL  = "Taunt"
+CC_SPELLS        = ["Taunt"]
+TARGET_PRIORITY  = {"boss": 1, "elite": 2, "rare": 3, "normal": 4}
+ANTI_KITE_SPELLS = ["Taunt"]
+
 SPELL_INFO = {
     "Might of Barlon": {
         "type": "buff",
