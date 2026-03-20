@@ -127,41 +127,41 @@ IGNORED_SPELLS = {
 
 
 # ══════════════════════════════════════════════════════════════
-#  ItemSlots — equipment slot IDs used by UNEQUIP_SLOT / EQUIPPED
-#  Values come from the IL2CPP ItemSlots enum.  Confirm IDs from
-#  conn.get_equipped() which returns slot=N for each item.
+#  RPGLibrary.SpellTargetType — enum values from IL2CPP
 # ══════════════════════════════════════════════════════════════
 
-class ItemSlots:
-    NONE        = 0
-    HEAD        = 1
-    CHEST       = 2
-    HANDS       = 3
-    LEGS        = 4
-    FEET        = 5
-    MAIN_HAND   = 6
-    OFF_HAND    = 7
-    NECK        = 8
-    RING_1      = 9
-    RING_2      = 10
-    EARRING     = 11
-    BRACELET    = 12
-    SHOULDER    = 13
-    BACK        = 14
-    WAIST       = 15
-    TWO_HAND    = 16
+class SpellTargetType:
+    HOSTILE_TARGET = 0
+    FRIENDLY_TARGET = 1
+    SELF = 2
+    GROUND = 3
+    GROUND_SELF = 4
+    PASSIVE = 5
 
-    # Reverse map: slot int → name (useful for display)
-    NAMES = {
-        0: "None", 1: "Head", 2: "Chest", 3: "Hands", 4: "Legs",
-        5: "Feet", 6: "MainHand", 7: "OffHand", 8: "Neck",
-        9: "Ring1", 10: "Ring2", 11: "Earring", 12: "Bracelet",
-        13: "Shoulder", 14: "Back", 15: "Waist", 16: "TwoHand",
+    _GROUND_TYPES = {3, 4}  # types that use SpellGroundTarget
+
+    _NAMES = {
+        0: "HostileTarget",
+        1: "FriendlyTarget",
+        2: "Self",
+        3: "Ground",
+        4: "GroundSelf",
+        5: "Passive",
     }
 
     @classmethod
-    def name(cls, slot_id: int) -> str:
-        return cls.NAMES.get(slot_id, f"Slot{slot_id}")
+    def is_ground(cls, val):
+        try:
+            return int(val) in cls._GROUND_TYPES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def name(cls, val):
+        try:
+            return cls._NAMES.get(int(val), f"Unknown({val})")
+        except (TypeError, ValueError):
+            return f"Unknown({val})"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -184,6 +184,7 @@ class CombatState:
         self.deaths = 0
         self.pulls = 0
         self.session_start = time.time()
+        self.last_cast = None
 
     def gain_stacks(self, n=1):
         self.stacks = min(self.max_stacks, self.stacks + n)
@@ -213,6 +214,7 @@ class CombatState:
     def track_cast(self, name):
         self.cast_counts[name] = self.cast_counts.get(name, 0) + 1
         self.total_casts += 1
+        self.last_cast = name
 
     def buff_active(self, name, duration):
         if name not in self.buff_timers: return False
@@ -228,186 +230,6 @@ class CombatState:
     def defensive_active(self, name, duration=10):
         if name not in self.defensive_timers: return False
         return time.time() - self.defensive_timers[name] < duration
-
-
-# ══════════════════════════════════════════════════════════════
-#  BuffTracker — per-buff timers, DoT tracking, proc detection
-# ══════════════════════════════════════════════════════════════
-
-class BuffTracker:
-    """
-    Comprehensive buff/debuff/DoT tracker.
-
-    Queries PLAYER_BUFFS at most every 500 ms, caches results, and tracks:
-      • Buff application time → remaining duration estimate
-      • Per-buff stack counts
-      • DoT timers (applied_at + known duration → when to reapply)
-      • Proc buff presence
-      • Session uptime per buff
-
-    Usage:
-        bt = conn.get_buff_tracker()
-        bt.refresh(force=True)
-
-        # Buff management
-        if bt.needs_refresh("Bloom", known_duration=30.0):
-            conn.try_cast("Bloom")
-
-        # DoT tracking — call after a successful cast
-        bt.dot_applied("Poison Strike", duration=12.0)
-        if bt.dot_needs_refresh("Poison Strike", duration=12.0):
-            conn.try_cast("Poison Strike")
-
-        # Batch helpers
-        missing = bt.get_missing_dots(profile.DOT_SPELLS)  # {name: dur}
-        procs   = bt.get_active_procs(profile.PROC_BUFFS)  # [name, ...]
-    """
-
-    def __init__(self, conn):
-        self.conn = conn
-        self._buff_cache   = {}   # name -> {applied_at, last_seen, stacks}
-        self._dot_timers   = {}   # name -> (applied_at, duration)
-        self._uptime_start = {}   # name -> when current active streak began
-        self._uptime_total = {}   # name -> total active seconds this session
-        self._last_query   = 0.0
-        self._query_interval = 0.5
-
-    # ── game query ──────────────────────────────────────────────
-
-    def refresh(self, force: bool = False):
-        """Re-query PLAYER_BUFFS and update the internal cache."""
-        now = time.time()
-        if not force and now - self._last_query < self._query_interval:
-            return
-        self._last_query = now
-        try:
-            raw = self.conn.get_player_buffs()
-        except Exception:
-            return
-        live: set = set()
-        for b in raw:
-            name = b.get("name", "")
-            if not name:
-                continue
-            live.add(name)
-            stacks = int(b.get("stacks", b.get("stack", 1)) or 1)
-            if name not in self._buff_cache:
-                self._buff_cache[name] = {"applied_at": now, "last_seen": now, "stacks": stacks}
-                self._uptime_start[name] = now
-            else:
-                self._buff_cache[name]["last_seen"] = now
-                self._buff_cache[name]["stacks"] = stacks
-        for n in list(self._buff_cache):
-            if n not in live:
-                if n in self._uptime_start:
-                    self._uptime_total[n] = (
-                        self._uptime_total.get(n, 0.0) + now - self._uptime_start.pop(n)
-                    )
-                del self._buff_cache[n]
-
-    # ── buff state helpers ───────────────────────────────────────
-
-    def is_active(self, name: str) -> bool:
-        """True if the named buff is currently active on the player."""
-        self.refresh()
-        return name in self._buff_cache
-
-    def remaining(self, name: str, known_duration: float = 0.0) -> float:
-        """Estimated remaining buff duration in seconds.
-        Returns inf when *known_duration* is 0 (i.e. duration unknown)."""
-        self.refresh()
-        if name not in self._buff_cache:
-            return 0.0
-        if known_duration <= 0:
-            return float("inf")
-        elapsed = time.time() - self._buff_cache[name]["applied_at"]
-        return max(0.0, known_duration - elapsed)
-
-    def stacks(self, name: str) -> int:
-        """Stack count for a buff (1 if active but not stacking)."""
-        self.refresh()
-        return self._buff_cache.get(name, {}).get("stacks", 0)
-
-    def needs_refresh(self, name: str, known_duration: float,
-                      refresh_at: float = 3.0) -> bool:
-        """True when the buff is missing or expiring within *refresh_at* seconds."""
-        if not self.is_active(name):
-            return True
-        if known_duration <= 0:
-            return False
-        return self.remaining(name, known_duration) < refresh_at
-
-    # ── DoT / periodic effect tracking ──────────────────────────
-
-    def dot_applied(self, name: str, duration: float):
-        """Call immediately after successfully casting a DoT to start its timer."""
-        self._dot_timers[name] = (time.time(), duration)
-
-    def dot_active(self, name: str, duration: float = None) -> bool:
-        """True while the DoT timer has not expired."""
-        if name not in self._dot_timers:
-            return False
-        applied_at, known_dur = self._dot_timers[name]
-        if duration is not None:
-            known_dur = duration
-        return time.time() - applied_at < known_dur
-
-    def dot_remaining(self, name: str, duration: float = None) -> float:
-        """Seconds until the DoT expires (0 if expired or never applied)."""
-        if name not in self._dot_timers:
-            return 0.0
-        applied_at, known_dur = self._dot_timers[name]
-        if duration is not None:
-            known_dur = duration
-        return max(0.0, known_dur - (time.time() - applied_at))
-
-    def dot_needs_refresh(self, name: str, duration: float,
-                          refresh_at: float = 2.0) -> bool:
-        """True when the DoT should be reapplied soon (within *refresh_at* seconds)."""
-        return self.dot_remaining(name, duration) < refresh_at
-
-    def get_missing_dots(self, dot_dict: dict) -> list:
-        """Given {name: duration}, return names that need (re)application right now."""
-        return [n for n, dur in dot_dict.items() if self.dot_needs_refresh(n, dur)]
-
-    # ── proc / batch helpers ────────────────────────────────────
-
-    def get_active_procs(self, proc_list: list) -> list:
-        """Return the subset of *proc_list* that are currently active as buffs."""
-        self.refresh()
-        return [name for name in proc_list if name in self._buff_cache]
-
-    def get_all_active(self) -> dict:
-        """Full snapshot: {name: {applied_at, last_seen, stacks}}."""
-        self.refresh()
-        return dict(self._buff_cache)
-
-    def snapshot(self) -> dict:
-        """Human-readable snapshot: {name: {stacks, elapsed_s}}."""
-        self.refresh()
-        now = time.time()
-        return {
-            name: {
-                "stacks": d.get("stacks", 1),
-                "elapsed_s": round(now - d.get("applied_at", now), 1),
-            }
-            for name, d in self._buff_cache.items()
-        }
-
-    # ── uptime tracking ──────────────────────────────────────────
-
-    def get_uptime(self, name: str) -> float:
-        """Total active seconds for *name* this session."""
-        total = self._uptime_total.get(name, 0.0)
-        if name in self._uptime_start:
-            total += time.time() - self._uptime_start[name]
-        return total
-
-    def get_uptime_pct(self, name: str, session_duration: float) -> float:
-        """Uptime as a % of *session_duration* (0–100)."""
-        if session_duration <= 0:
-            return 0.0
-        return min(100.0, 100.0 * self.get_uptime(name) / session_duration)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -429,7 +251,6 @@ class EthyToolConnection:
         self._cast_failures = {}
         self._blocked_spells = set()
         self._pet_attacked_uid = None
-        self._buff_tracker = None
 
     @property
     def pid(self):
@@ -651,6 +472,72 @@ class EthyToolConnection:
         return None
 
     # ══════════════════════════════════════════════════════════════
+    #  GROUND-TARGETED CASTING
+    #
+    #  Spell.Cast(bool, SpellGroundTarget) and
+    #  Spell.DoCast(LivingEntity, bool, SpellGroundTarget) accept a
+    #  SpellGroundTarget with TargetPosition (RPGLibrary.Position).
+    #
+    #  DLL command: CAST_AT_<spell> x,y,z
+    #    → creates SpellGroundTarget(Position(x,y,z)), calls DoCast
+    #  Fallback:    double-cast trick (CAST_ twice to confirm at
+    #               default reticle position)
+    # ══════════════════════════════════════════════════════════════
+
+    def cast_at(self, spell_name: str, x: float, y: float, z: float) -> bool:
+        """Cast a ground-targeted spell at world coordinates (x, y, z).
+
+        Tries CAST_AT_<spell> x,y,z first (requires DLL support).
+        Falls back to the double-cast trick if DLL doesn't support it.
+        """
+        resolved = self.resolve_spell_name(spell_name)
+        r = self._send(f"CAST_AT_{resolved} {x},{y},{z}")
+        if r is not None and r.startswith("OK"):
+            return True
+        if r and "UNKNOWN" in r:
+            return self._cast_ground_fallback(spell_name)
+        return False
+
+    def cast_at_target(self, spell_name: str) -> bool:
+        """Cast a ground-targeted spell at the current hostile target's position.
+
+        Reads target x,y,z from TARGET_FULL and passes to cast_at().
+        Returns False if no target or target has no position.
+        """
+        t = self.get_target_full()
+        if not t:
+            return False
+        try:
+            x, y, z = float(t["x"]), float(t["y"]), float(t["z"])
+        except (KeyError, TypeError, ValueError):
+            return self._cast_ground_fallback(spell_name)
+        return self.cast_at(spell_name, x, y, z)
+
+    def cast_at_self(self, spell_name: str) -> bool:
+        """Cast a ground-targeted spell at the player's own position.
+
+        Useful for GroundSelf-type spells or defensive AoEs.
+        """
+        px, py, pz = self.get_position()
+        if px == 0.0 and py == 0.0:
+            return self._cast_ground_fallback(spell_name)
+        return self.cast_at(spell_name, px, py, pz)
+
+    def _cast_ground_fallback(self, spell_name: str) -> bool:
+        """Fallback for ground-targeted spells when CAST_AT_ is unavailable.
+
+        Uses the double-cast trick: first cast enters targeting mode,
+        second cast confirms at the game's default reticle position.
+        """
+        if not self.cast(spell_name):
+            return False
+        p = self.load_profile()
+        delay = getattr(p, "GROUND_CAST_DELAY", 0.05) if p else 0.05
+        time.sleep(delay)
+        self.cast(spell_name)
+        return True
+
+    # ══════════════════════════════════════════════════════════════
     #  TARGET  (dedicated DLL commands — with garbage value guards)
     # ══════════════════════════════════════════════════════════════
 
@@ -666,10 +553,12 @@ class EthyToolConnection:
         if not r or r in ("NO_TARGET", "NO_PLAYER"):
             return None
         d = self._parse_kv(r)
+        # Guard garbage floats
         for key in ("hp", "max_hp", "dist"):
             val = d.get(key, 0)
             if isinstance(val, (int, float)) and (abs(val) > 1e7 or val < -1):
                 d[key] = 0.0
+        # Coerce flag fields to bool
         for flag in ("boss", "elite", "rare", "critter", "combat"):
             d[flag] = bool(int(d.get(flag, 0)))
         return d if d.get("name") else None
@@ -680,7 +569,6 @@ class EthyToolConnection:
             return 0.0
         try:
             val = float(r)
-            # Guard: real HP is 0-100 pct or 0-999999 flat. Garbage is 1e+30.
             if abs(val) > 1e7:
                 return 0.0
             return val
@@ -699,7 +587,6 @@ class EthyToolConnection:
             return 999.0
         try:
             val = float(r)
-            # Guard: real distance is 0-500. Garbage is -1e+29.
             if val < 0 or val > 1e6:
                 return 999.0
             return val
@@ -707,7 +594,7 @@ class EthyToolConnection:
             return 999.0
 
     def get_target_info(self):
-        """TARGET_INFO with garbage guards."""
+        """Alias for get_target()."""
         return self.get_target()
 
     def get_target_hp_v2(self):
@@ -717,7 +604,6 @@ class EthyToolConnection:
             return None
         d = {}
         parts = r.split("|")
-        # First part is percent (no key)
         if parts:
             try:
                 d["percent"] = float(parts[0])
@@ -773,7 +659,8 @@ class EthyToolConnection:
         return bool(t.get("combat", False)) if t else False
 
     def is_target_dead(self):
-        """Returns True when the target HP reads as 0 (and not a garbage value)."""
+        """Returns True when the target HP reads as 0 (and not a garbage value).
+        Relies on has_target() as primary alive check."""
         if not self.has_target():
             return False
         r = self._send("TARGET_HP")
@@ -782,7 +669,7 @@ class EthyToolConnection:
         try:
             val = float(r)
             if abs(val) > 1e7:
-                return False
+                return False  # garbage — assume alive
             return val <= 0.0
         except (ValueError, TypeError):
             return False
@@ -922,13 +809,18 @@ class EthyToolConnection:
         return self._parse_kv(r)
 
     def entity_under_mouse(self):
-        """ENTITY_UNDER_MOUSE: returns the entity the mouse cursor is hovering over
-        in the game world (uses LocalPlayerInput raycasting / hover logic).
-        Returns a dict with keys uid, name, class, x, y, z, ptr, etc., or None."""
+        """ENTITY_UNDER_MOUSE: entity under the player's cursor in-game.
+        Returns dict with ptr, uid, class, name, x, y, z or None."""
         r = self._send("ENTITY_UNDER_MOUSE")
-        if not r or r in ("NONE", "NO_INPUT", "IL2CPP_NOT_AVAILABLE"): return None
-        if "uid=" not in r: return None
-        return self._parse_kv(r)
+        if not r or r in ("NONE", "NO_INPUT", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return None
+        d = self._parse_kv(r)
+        if "ptr" in d and isinstance(d["ptr"], str) and d["ptr"].startswith("0x"):
+            try:
+                d["ptr"] = int(d["ptr"], 16)
+            except ValueError:
+                pass
+        return d
 
     def get_nearby_players(self):
         """NEARBY_PLAYERS: other PlayerEntity instances in NearbyEntities (not self)."""
@@ -972,10 +864,89 @@ class EthyToolConnection:
     # ══════════════════════════════════════════════════════════════
 
     def get_companions(self):
-        """COMPANIONS: list companion UIDs and HP."""
+        """COMPANIONS: uid, hp%, max_hp, mp%, max_mp for each companion."""
         r = self._send("COMPANIONS")
         if not r or r == "NONE": return []
         return [self._parse_kv(b) for b in r.split("###") if b.strip()]
+
+    def get_pet_stats(self):
+        """Return list of dicts with raw HP and MP values for each companion.
+
+        Each dict keys: uid, hp_pct, max_hp, raw_hp, mp_pct, max_mp, raw_mp.
+        """
+        companions = self.get_companions()
+        result = []
+        for c in companions:
+            hp_pct = float(c.get("hp",     0) or 0)
+            max_hp = int  (c.get("max_hp", 0) or 0)
+            mp_pct = float(c.get("mp",     0) or 0)
+            max_mp = int  (c.get("max_mp", 0) or 0)
+            raw_hp = round(hp_pct * max_hp / 100) if max_hp > 0 else 0
+            raw_mp = round(mp_pct * max_mp / 100) if max_mp > 0 else 0
+            result.append({
+                "uid":    c.get("uid", 0),
+                "hp_pct": hp_pct,
+                "max_hp": max_hp,
+                "raw_hp": raw_hp,
+                "mp_pct": mp_pct,
+                "max_mp": max_mp,
+                "raw_mp": raw_mp,
+            })
+        return result
+
+    def get_pet_hp(self):
+        """Raw HP of the first companion (0 if no companion active)."""
+        pets = self.get_pet_stats()
+        return pets[0]["raw_hp"] if pets else 0
+
+    def get_pet_mp(self):
+        """Raw MP of the first companion (0 if no companion active)."""
+        pets = self.get_pet_stats()
+        return pets[0]["raw_mp"] if pets else 0
+
+    def get_pet_count(self):
+        """PET_COUNT: number of active (non-removed) companions."""
+        r = self._send("PET_COUNT")
+        try: return int(r) if r else 0
+        except (ValueError, TypeError): return 0
+
+    def get_companion_full(self):
+        """COMPANION_FULL: full entity data per companion.
+
+        Returns list of dicts with keys:
+          uid, name, hp, max_hp, raw_hp, mp, max_mp, raw_mp,
+          x, y, z, in_combat, is_moving
+        Requires recompiled DLL with COMPANION_FULL command.
+        """
+        r = self._send("COMPANION_FULL")
+        if not r or r in ("NONE", "IL2CPP_NOT_AVAILABLE"): return []
+        return [self._parse_kv(b) for b in r.split("###") if b.strip()]
+
+    def get_buff_stacks(self, internal_name: str) -> dict:
+        """BUFF_STACKS <name>: query a single buff by its internal name.
+
+        Returns dict with keys: name, disp, id, stacks, dur, maxdur, active
+        Returns {} if buff is not active.
+        Requires recompiled DLL with BUFF_STACKS command.
+        """
+        r = self._send(f"BUFF_STACKS {internal_name}")
+        if not r or r in ("NOT_FOUND", "NO_BUFFS", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return {}
+        return self._parse_kv(r)
+
+    def get_target_full(self) -> dict:
+        """TARGET_FULL: full hostile target data including mp and entity state.
+
+        Returns dict with keys:
+          uid, name, hp, max_hp, raw_hp, mp, max_mp, raw_mp,
+          x, y, z, in_combat, is_moving, is_boss, is_elite, is_rare
+        Returns {} if no target.
+        Requires recompiled DLL with TARGET_FULL command.
+        """
+        r = self._send("TARGET_FULL")
+        if not r or r in ("NO_TARGET", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return {}
+        return self._parse_kv(r)
 
     # ══════════════════════════════════════════════════════════════
     #  PVP / LEGAL TARGETS
@@ -1059,23 +1030,6 @@ class EthyToolConnection:
     def stop(self):
         """STOP_MOVEMENT: stop all movement."""
         return self._send("STOP_MOVEMENT") == "OK"
-
-    def target_entity_uid(self, uid: int) -> bool:
-        """TARGET_ENTITY <uid>: target a specific entity by UID.
-        Searches nearby list first, then full scene. Updates target cache."""
-        r = self._send(f"TARGET_ENTITY {uid}")
-        return r == "OK"
-
-    def follow_entity(self, uid: int) -> bool:
-        """FOLLOW_ENTITY <uid>: follow entity by UID via LocalPlayerInput.FollowEntity.
-        Searches nearby first then full scene. Use stop() to cancel."""
-        r = self._send(f"FOLLOW_ENTITY {uid}")
-        return r == "OK"
-
-    def autorun(self, enabled: bool) -> bool:
-        """AUTORUN_ON / AUTORUN_OFF: toggle the player AutoRunning flag directly."""
-        r = self._send("AUTORUN_ON" if enabled else "AUTORUN_OFF")
-        return r == "OK"
 
     # ══════════════════════════════════════════════════════════════
     #  PARTY
@@ -1400,7 +1354,7 @@ class EthyToolConnection:
 
     def scan_doodads(self):
         """Scan for doodad-like entities (harvest nodes, resources, interactables).
-        Deprecated: prefer scan_nodes() which uses the dedicated C++ NODE_SCAN pipeline."""
+        Uses Game.dll hierarchy: Doodad, Corpse, ConstructionDoodad, WallEntity, GrowingDoodad."""
         entities = self.get_nearby_addresses()
         if not entities:
             entities = self.get_scene_addresses()
@@ -1408,6 +1362,8 @@ class EthyToolConnection:
         PLAYER_CLASSES = {"LocalPlayerEntity", "PlayerEntity", "LivingEntity"}
         MOB_CLASSES = {"NPCEntity", "MonsterEntity", "HostileEntity"}
         SKIP_CLASSES = PLAYER_CLASSES | MOB_CLASSES
+        # From Game.dll: Doodad, Corpse, ConstructionDoodad, WallEntity, GrowingDoodad
+        # Plus common IL2CPP class names for harvest/gather
         DOODAD_CLASSES = {
             "Doodad", "HarvestNode", "GatherableEntity", "ResourceNode",
             "InteractableEntity", "StaticEntity", "Corpse", "ConstructionDoodad",
@@ -1423,196 +1379,6 @@ class EthyToolConnection:
                 doodads.append(e)
         return doodads
 
-    # ──────────────────────────────────────────────────────────────
-    #  GATHERING / RESOURCE NODES
-    # ──────────────────────────────────────────────────────────────
-
-    def _parse_node_entries(self, raw):
-        """Parse NODE_SCAN / GATHER_NEAREST response into a list of dicts."""
-        if not raw or raw in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE", "NO_INPUT"):
-            return []
-        entries = []
-        for part in raw.split("###"):
-            part = part.strip()
-            if not part or part.startswith("count="):
-                continue
-            d = self._parse_kv(part)
-            if d:
-                for key in ("usable", "used", "static"):
-                    if key in d:
-                        d[key] = d[key] == "1"
-                for key in ("dist", "x", "y", "z"):
-                    if key in d:
-                        try:
-                            d[key] = float(d[key])
-                        except ValueError:
-                            pass
-                entries.append(d)
-        return entries
-
-    def scan_nodes(self, name_filter="", usable_only=False):
-        """Scan for all nearby resource/gather nodes within 60 units.
-
-        Args:
-            name_filter: optional substring to match against class or entity name
-            usable_only: if True, return only non-depleted nodes
-
-        Returns:
-            list of dicts with keys: ptr, class, name, type, usable, used,
-                                     static, x, y, z, dist
-            type is one of: ore / herb / tree / fish / stone / unknown
-        """
-        if usable_only:
-            cmd = f"NODE_SCAN_USABLE_{name_filter}" if name_filter else "NODE_SCAN_USABLE"
-        else:
-            cmd = f"NODE_SCAN_{name_filter}" if name_filter else "NODE_SCAN"
-        return self._parse_node_entries(self._send(cmd))
-
-    def scan_ore_nodes(self):
-        """Scan for nearby ore/mining veins."""
-        nodes = self.scan_nodes()
-        return [n for n in nodes if n.get("type") == "ore"]
-
-    def scan_herb_nodes(self):
-        """Scan for nearby herb/plant gathering nodes."""
-        nodes = self.scan_nodes()
-        return [n for n in nodes if n.get("type") == "herb"]
-
-    def scan_tree_nodes(self):
-        """Scan for nearby woodcutting trees."""
-        nodes = self.scan_nodes()
-        return [n for n in nodes if n.get("type") == "tree"]
-
-    def scan_fish_nodes(self):
-        """Scan for nearby fishing spots."""
-        nodes = self.scan_nodes()
-        return [n for n in nodes if n.get("type") == "fish"]
-
-    def gather_nearest(self, name_filter=""):
-        """Find and use the nearest usable gather node.
-
-        Args:
-            name_filter: optional substring to restrict which node type to target
-                         e.g. "oak", "ore", "herb", "iron"
-
-        Returns:
-            dict with keys: class, name, type, dist, ptr, invoke — or None on failure.
-        """
-        cmd = f"GATHER_NEAREST_{name_filter}" if name_filter else "GATHER_NEAREST"
-        r = self._send(cmd)
-        if not r or not r.startswith("OK_GATHER"):
-            return None
-        d = self._parse_kv(r.replace("OK_GATHER|", ""))
-        if d:
-            for key in ("dist",):
-                try:
-                    d[key] = float(d[key])
-                except (ValueError, KeyError):
-                    pass
-        return d
-
-    def gather_node(self, name_filter):
-        """Alias for gather_nearest(name_filter). Use to gather a specific resource.
-
-        Example:
-            conn.gather_node("oak")     # nearest oak tree
-            conn.gather_node("iron ore")
-            conn.gather_node("nettle")
-        """
-        return self.gather_nearest(name_filter)
-
-    def gather_ore(self):
-        """Gather the nearest ore vein."""
-        return self.gather_nearest("ore")
-
-    def gather_herb(self):
-        """Gather the nearest herb node."""
-        return self.gather_nearest("herb")
-
-    def gather_tree(self):
-        """Chop the nearest tree."""
-        return self.gather_nearest("tree")
-
-    def gather_fish(self):
-        """Fish at the nearest fishing spot."""
-        return self.gather_nearest("fish")
-
-    def scan_nodes_in_range(self, max_dist: float, name_filter: str = "",
-                             exclude_used: bool = True) -> list:
-        """Scan for gather nodes within *max_dist* units of the player.
-
-        Args:
-            max_dist:      maximum 2-D distance to consider (units).
-            name_filter:   optional substring passed to NODE_SCAN_USABLE.
-            exclude_used:  if True (default) skip nodes whose ``used`` flag is set
-                           (i.e. already gathered / on respawn cooldown).
-
-        Returns:
-            List of node dicts sorted nearest-first, each with keys:
-            ptr, class, name, type, usable, used, static, x, y, z, dist,
-            _live_dist (distance from current player position).
-        """
-        cmd = f"NODE_SCAN_USABLE_{name_filter}" if name_filter else "NODE_SCAN_USABLE"
-        nodes = self._parse_node_entries(self._send(cmd))
-        px, py, _ = self.get_position()
-        result = []
-        for n in nodes:
-            if exclude_used and n.get("used"):
-                continue
-            dx = n.get("x", 0.0) - px
-            dy = n.get("y", 0.0) - py
-            live_dist = math.sqrt(dx * dx + dy * dy)
-            if live_dist <= max_dist:
-                n["_live_dist"] = live_dist
-                result.append(n)
-        result.sort(key=lambda n: n["_live_dist"])
-        return result
-
-    def wait_for_job_start(self, timeout: float = 5.0,
-                            poll: float = 0.25,
-                            stop_event=None) -> tuple:
-        """Poll PLAYER_JOB until it becomes non-empty (action started).
-
-        Args:
-            timeout:     seconds to wait before giving up.
-            poll:        poll interval in seconds.
-            stop_event:  optional threading.Event; returns early if set.
-
-        Returns:
-            (job_name, elapsed_s) — job_name is '' if timeout was reached.
-        """
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if stop_event is not None and stop_event.is_set():
-                return ("", time.time() - t0)
-            job = self.get_job()
-            if job:
-                return (job, time.time() - t0)
-            time.sleep(poll)
-        return ("", time.time() - t0)
-
-    def wait_for_job_end(self, timeout: float = 30.0,
-                          poll: float = 0.25,
-                          stop_event=None) -> tuple:
-        """Poll PLAYER_JOB until it clears (action finished).
-
-        Args:
-            timeout:     seconds to wait before giving up.
-            poll:        poll interval in seconds.
-            stop_event:  optional threading.Event; returns early if set.
-
-        Returns:
-            (completed, duration_s) — completed is False if timeout or stop_event.
-        """
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            if stop_event is not None and stop_event.is_set():
-                return (False, time.time() - t0)
-            if not self.get_job():
-                return (True, time.time() - t0)
-            time.sleep(poll)
-        return (False, time.time() - t0)
-
     def debug_find(self, name_filter):
         r = self._send(f"DEBUG_FIND_{name_filter}")
         if not r or r in ("NOT_FOUND", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
@@ -1626,6 +1392,91 @@ class EthyToolConnection:
         return r is not None and ("OK_USED" in r or "OK_USE_ENTITY" in r)
 
     # ══════════════════════════════════════════════════════════════
+    #  GATHER NODES
+    # ══════════════════════════════════════════════════════════════
+
+    def _parse_node_entries(self, raw):
+        """Parse NODE_SCAN response: count=N###ptr=0x..|class=..|name=..|type=..| ..."""
+        if not raw:
+            return []
+        parts = raw.split("###")
+        results = []
+        for part in parts:
+            part = part.strip()
+            if not part or part.startswith("count="):
+                continue
+            d = {}
+            for kv in part.split("|"):
+                if "=" not in kv:
+                    continue
+                k, v = kv.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k == "ptr":
+                    d[k] = v
+                elif k in ("x", "y", "z", "dist"):
+                    try:
+                        d[k] = float(v)
+                    except ValueError:
+                        d[k] = 0.0
+                elif k in ("usable", "used", "static"):
+                    d[k] = v == "1"
+                else:
+                    d[k] = v
+            if d:
+                results.append(d)
+        return results
+
+    def scan_nodes(self, name_filter="", usable_only=False):
+        """NODE_SCAN: all gather nodes within 60u. Returns list of dicts with
+        ptr, class, name, type, usable, used, static, x, y, z, dist."""
+        if name_filter and usable_only:
+            cmd = f"NODE_SCAN_USABLE_{name_filter}"
+        elif usable_only:
+            cmd = "NODE_SCAN_USABLE"
+        elif name_filter:
+            cmd = f"NODE_SCAN_{name_filter}"
+        else:
+            cmd = "NODE_SCAN"
+        r = self._send(cmd)
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_node_entries(r)
+
+    def scan_nodes_in_range(self, max_dist=25.0, name_filter="", exclude_used=True):
+        """Scan gather nodes within max_dist units, optionally filtered by name
+        and excluding recently-used nodes. Returns list sorted by distance,
+        each dict has _live_dist for the current distance value."""
+        nodes = self.scan_nodes(name_filter=name_filter, usable_only=False)
+        results = []
+        for n in nodes:
+            dist = n.get("dist", 999.0)
+            if isinstance(dist, str):
+                try:
+                    dist = float(dist)
+                except ValueError:
+                    dist = 999.0
+            if dist > max_dist:
+                continue
+            if exclude_used and n.get("used"):
+                continue
+            n["_live_dist"] = dist
+            results.append(n)
+        results.sort(key=lambda e: e.get("_live_dist", 999.0))
+        return results
+
+    def gather_nearest(self, name_filter=""):
+        """GATHER_NEAREST: move to and use the closest usable gather node.
+        Returns dict with class, name, type, dist, ptr, invoke (0=OK) or None."""
+        cmd = f"GATHER_NEAREST_{name_filter}" if name_filter else "GATHER_NEAREST"
+        r = self._send(cmd)
+        if not r or r in ("NONE", "NO_PLAYER", "NO_INPUT", "IL2CPP_NOT_AVAILABLE"):
+            return None
+        d = self._parse_kv(r.replace("OK_GATHER|", ""))
+        if "OK_GATHER" in r and "invoke" not in d:
+            d["invoke"] = 0
+        return d
+
+    # ══════════════════════════════════════════════════════════════
     #  SPELLS
     # ══════════════════════════════════════════════════════════════
 
@@ -1634,7 +1485,14 @@ class EthyToolConnection:
     def get_spells(self):
         r = self._send("SPELLS_ALL")
         if not r or r in ("NONE", "NOT_INITIALIZED"): return []
-        return [self._parse_kv(s) for s in r.split("###") if s.strip()]
+        spells = [self._parse_kv(s) for s in r.split("###") if s.strip()]
+        for s in spells:
+            if "target_type" in s:
+                try:
+                    s["target_type"] = int(s["target_type"])
+                except (ValueError, TypeError):
+                    pass
+        return spells
 
     def get_spell_names(self):
         return [s.get("display", s.get("name", "")) for s in self.get_spells()]
@@ -1737,45 +1595,6 @@ class EthyToolConnection:
         return [s for s in self.get_spell_names()
                 if s not in IGNORED_SPELLS and not s.lower().startswith("summon ")]
 
-    # ── Fast per-spell queries (single C++ call, no full list scan) ──
-
-    def spell_ready_fast(self, name: str) -> bool:
-        """SPELL_READY <name>: single C++ call — True if spell is off cooldown.
-        Faster than is_spell_ready() for tight rotation loops."""
-        r = self._send(f"SPELL_READY {name}")
-        return r == "1"
-
-    def spell_cd_fast(self, name: str) -> float:
-        """SPELL_CD <name>: returns remaining cooldown in seconds (0.0 = ready)."""
-        r = self._send(f"SPELL_CD {name}")
-        if not r or r in ("SPELL_NOT_FOUND", "NO_PLAYER"): return 0.0
-        try: return float(r)
-        except (ValueError, TypeError): return 0.0
-
-    def spell_info(self, name: str):
-        """SPELL_INFO <name>: full spell fields in one call.
-        Returns dict with keys: uname, dname, cat, cd, cur_cd, mana, smana,
-        range, cast, channel, auto, self, ready, interrupt_cast, interrupt_channel.
-        Returns None if spell not found."""
-        r = self._send(f"SPELL_INFO {name}")
-        if not r or r in ("SPELL_NOT_FOUND", "NO_PLAYER", "NO_NAME"): return None
-        d = self._parse_kv(r)
-        for k in ("cd", "cur_cd", "mana", "smana", "range", "cast", "channel"):
-            if k in d:
-                try: d[k] = float(d[k])
-                except (ValueError, TypeError): pass
-        for k in ("auto", "self", "ready", "interrupt_cast", "interrupt_channel"):
-            if k in d:
-                d[k] = bool(int(d.get(k, 0)))
-        return d
-
-    def spell_autocast(self, name: str, enabled: bool) -> bool:
-        """SPELL_AUTOCAST_ON/OFF <name>: toggle autocast directly in C++.
-        More reliable than the profile-level autocast_on/off wrappers."""
-        cmd = f"SPELL_AUTOCAST_ON {name}" if enabled else f"SPELL_AUTOCAST_OFF {name}"
-        r = self._send(cmd)
-        return r is not None and r.startswith("OK")
-
     # ══════════════════════════════════════════════════════════════
     #  BUFFS & STACKS (from game)
     # ══════════════════════════════════════════════════════════════
@@ -1809,7 +1628,8 @@ class EthyToolConnection:
             if not p:
                 continue
             d = self._parse_kv(p)
-            if d and d.get("name"):
+            n = d.get("name", "") if d else ""
+            if n and n not in ("BADLEN", "NULL", "???", "BADPTR"):
                 results.append(d)
         return results
 
@@ -1828,25 +1648,92 @@ class EthyToolConnection:
         """Get discipline level from PLAYER_SKILLS. Returns int or None if not found."""
         skills = self.get_player_skills()
         dn = discipline_name.lower()
+        raw_level = None
         for s in skills:
             name = (s.get("name") or "").strip().lower()
-            if dn in name or name in dn:
-                for key in ("|i20", "|i18", "|i1C", "|i24", "|i28", "level", "lvl"):
-                    v = s.get(key)
-                    if v is not None:
-                        try:
-                            lv = int(float(v))
-                            if 1 <= lv <= 100:
-                                return lv
-                        except (ValueError, TypeError):
-                            pass
-        return None
+            cat  = (s.get("category") or "").strip().lower()
+            if dn in name or name in dn or dn in cat or cat in dn:
+                v = s.get("level")
+                if v is not None:
+                    try:
+                        raw_level = int(float(v))
+                        break
+                    except (ValueError, TypeError):
+                        pass
+        # DLL may return level=0 for all skills (wrong offset) — infer from known spells
+        if raw_level == 0:
+            inferred = self._infer_discipline_level()
+            if inferred is not None:
+                return inferred
+        return raw_level if raw_level is not None else None
+
+    def get_combat_level(self):
+        """Get player combat level from PLAYER_COMBAT_LEVEL. Returns int or None."""
+        r = self._send("PLAYER_COMBAT_LEVEL")
+        if not r or r in ("NOT_AVAILABLE", "NOT_INITIALIZED"):
+            return None
+        try:
+            return int(r)
+        except (ValueError, TypeError):
+            return None
+
+    def get_profession_level(self):
+        """Get player profession level from PLAYER_PROFESSION_LEVEL. Returns int or None."""
+        r = self._send("PLAYER_PROFESSION_LEVEL")
+        if not r or r in ("NOT_AVAILABLE", "NOT_INITIALIZED"):
+            return None
+        try:
+            return int(r)
+        except (ValueError, TypeError):
+            return None
+
+    def get_player_info(self):
+        """PLAYER_INFO: returns dict with combat_level, profession_level, vocation, etc."""
+        r = self._send("PLAYER_INFO")
+        if not r or r in ("NOT_AVAILABLE", "NOT_INITIALIZED"):
+            return {}
+        return self._parse_kv(r)
+
+    def get_player_talents(self):
+        """PLAYER_TALENTS: returns list of active talent dicts."""
+        r = self._send("PLAYER_TALENTS")
+        if not r or r in ("EMPTY", "NOT_INITIALIZED"):
+            return []
+        return [self._parse_kv(s) for s in r.split("###") if s.strip()]
+
+    def _infer_discipline_level(self):
+        """Infer minimum discipline level from known spells.
+        If the player has a spell requiring level X, they must be >= X."""
+        if hasattr(self, '_inferred_disc_level'):
+            return self._inferred_disc_level
+        p = self.load_profile()
+        if not p:
+            self._inferred_disc_level = None
+            return None
+        reqs = getattr(p, "SKILL_LEVEL_REQUIREMENTS", {})
+        if not reqs:
+            self._inferred_disc_level = None
+            return None
+        known = self.get_spell_set()
+        max_req = 0
+        for spell_name, req_level in reqs.items():
+            if spell_name in known or spell_name.lower() in known:
+                max_req = max(max_req, req_level)
+        self._inferred_disc_level = max_req if max_req > 0 else None
+        return self._inferred_disc_level
 
     def has_buff(self, name):
         for b in self.get_player_buffs():
             if b.get("id") == name or b.get("name") == name:
                 return True
         return False
+
+    def get_buff_stacks_count(self, name):
+        """Return current stack count for a named buff (0 if not active)."""
+        for b in self.get_player_buffs():
+            if b.get("id") == name or b.get("name") == name:
+                return int(b.get("stacks", b.get("stack", 0)) or 0)
+        return 0
 
     def get_buff_duration(self, name):
         for b in self.get_player_buffs():
@@ -1910,20 +1797,19 @@ class EthyToolConnection:
             return True
 
         required = reqs[name]
-        level = getattr(p, "SPIRITUALISM_LEVEL", None)
-        if level is None:
-            level = getattr(p, "DISCIPLINE_LEVEL", None)
+        level = self.get_discipline_level(self.detect_class())
         if level is None:
             level = self.get_discipline_level("Spiritualism")
-            if level is None:
-                level = self.get_discipline_level("Spirit")
-            if level is None:
-                level = self.get_discipline_level("Ranger")
+        if level is None:
+            level = getattr(p, "SPIRITUALISM_LEVEL", None)
+        if level is None:
+            level = getattr(p, "DISCIPLINE_LEVEL", None)
+        inferred = self._infer_discipline_level()
+        if inferred is not None and inferred > (level or 0):
+            level = inferred
         if level is None:
             level = 0
-        if level < required:
-            return False
-        return True
+        return level >= required
 
     def get_priority_spell(self, stacks, hp_pct):
         p = self.load_profile()
@@ -2009,12 +1895,38 @@ class EthyToolConnection:
     def get_food(self):        return self._float(self._send("PLAYER_FOOD"))
 
     def get_job(self):
-        """Return the current PLAYER_JOB string, or '' if idle.
-        Normalises the DLL's literal 'None'/'null'/'NOT_INITIALIZED' to empty string."""
-        r = (self._send("PLAYER_JOB") or "").strip()
-        if r.lower() in ("", "none", "null", "not_initialized"):
-            return ""
-        return r
+        r = self._send("PLAYER_JOB")
+        return r if r and r != "NOT_INITIALIZED" else ""
+
+    def wait_for_job_start(self, timeout=5.0, poll=0.25, stop_event=None):
+        """Poll PLAYER_JOB until non-empty or timeout.
+        Returns (job_name, elapsed_seconds). job_name is '' on timeout."""
+        start = time.time()
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                return ("", elapsed)
+            if stop_event and stop_event.is_set():
+                return ("", elapsed)
+            job = self.get_job()
+            if job:
+                return (job, elapsed)
+            time.sleep(poll)
+
+    def wait_for_job_end(self, timeout=30.0, poll=0.25, stop_event=None):
+        """Poll PLAYER_JOB until it clears (empty) or timeout.
+        Returns (finished: bool, elapsed_seconds)."""
+        start = time.time()
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                return (False, elapsed)
+            if stop_event and stop_event.is_set():
+                return (False, elapsed)
+            job = self.get_job()
+            if not job:
+                return (True, elapsed)
+            time.sleep(poll)
 
     def in_safe_zone(self):    return self._send("PLAYER_PZ_ZONE") == "1"
     def in_wildlands(self):    return self._send("PLAYER_WILDLANDS") == "1"
@@ -2185,66 +2097,6 @@ class EthyToolConnection:
             except ValueError: pass
         return (0, r)
 
-    def use_item(self, uid: int) -> bool:
-        """USE_ITEM <uid>: call Item.Use on the item with this UID.
-        Works for consumables, food, potions. The game handles the action.
-        Returns True on successful invoke."""
-        r = self._send(f"USE_ITEM {uid}")
-        return r == "OK"
-
-    def equip_item(self, uid: int) -> bool:
-        """EQUIP_ITEM <uid>: equip (or toggle) item with this UID.
-        Calls Item.Use which the game interprets as equip/unequip for gear.
-        Use get_inventory() to find UIDs."""
-        r = self._send(f"EQUIP_ITEM {uid}")
-        return r == "OK"
-
-    def unequip_slot(self, slot: int) -> bool:
-        """UNEQUIP_SLOT <slot>: unequip the item currently in the given slot.
-        slot is an ItemSlots int (e.g. ItemSlots.HEAD = 1).
-        Calls Item.Use on the equipped item which toggles it off."""
-        r = self._send(f"UNEQUIP_SLOT {slot}")
-        return r in ("OK",)
-
-    def equip_best_in_slot(self, slot: int):
-        """Equip the highest-quality unequipped item for a given slot.
-        Reads inventory, finds best matching item, calls equip_item.
-        Returns (item_dict, True) if equipped, (None, False) otherwise."""
-        inv = self.get_inventory()
-        candidates = [
-            i for i in inv
-            if int(i.get("equip", 0)) == 0 and int(i.get("bank", 0)) == 0
-        ]
-        if not candidates:
-            return None, False
-        slot_items = [i for i in candidates if self._item_fits_slot(i, slot)]
-        if not slot_items:
-            return None, False
-        best = max(slot_items, key=lambda i: (int(i.get("quality", 0)), int(i.get("rarity", 0))))
-        uid = int(best.get("uid", 0))
-        if uid and self.equip_item(uid):
-            return best, True
-        return None, False
-
-    @staticmethod
-    def _item_fits_slot(item: dict, slot: int) -> bool:
-        """Heuristic: check if item category matches target slot."""
-        cat = (item.get("cat") or "").lower()
-        slot_cats = {
-            ItemSlots.HEAD: ["helmet", "hat", "head"],
-            ItemSlots.CHEST: ["chest", "body", "armor", "robe"],
-            ItemSlots.HANDS: ["gloves", "gauntlets", "hands"],
-            ItemSlots.LEGS: ["legs", "pants", "trousers"],
-            ItemSlots.FEET: ["boots", "shoes", "feet"],
-            ItemSlots.MAIN_HAND: ["sword", "axe", "mace", "staff", "wand", "dagger", "mainhand", "weapon"],
-            ItemSlots.OFF_HAND: ["shield", "offhand", "orb"],
-            ItemSlots.NECK: ["necklace", "amulet", "neck"],
-            ItemSlots.RING_1: ["ring"],
-            ItemSlots.RING_2: ["ring"],
-        }
-        cats = slot_cats.get(slot, [])
-        return any(c in cat for c in cats)
-
     def debug_loot(self):
         """DEBUG_LOOT: dump raw pointer chain for open-container detection."""
         return self._send("DEBUG_LOOT") or "NO_RESPONSE"
@@ -2316,6 +2168,10 @@ class EthyToolConnection:
         for path in search:
             if path.exists():
                 try:
+                    import sys as _sys
+                    _profile_dir = str(path.parent.resolve())
+                    if _profile_dir not in _sys.path:
+                        _sys.path.insert(0, _profile_dir)
                     spec = importlib.util.spec_from_file_location(detected, str(path))
                     mod = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(mod)
@@ -2333,6 +2189,59 @@ class EthyToolConnection:
         p = self.load_profile()
         if not p: return {}
         return getattr(p, "SPELL_INFO", {}).get(name, {})
+
+    # ══════════════════════════════════════════════════════════════
+    #  SPELL TARGET TYPE — query from game data
+    # ══════════════════════════════════════════════════════════════
+
+    def get_spell_target_type(self, spell_name: str) -> int:
+        """Return the SpellTargetType int for a spell.
+
+        Checks (in order):
+          1. SPELL_TARGET_TYPE <name> DLL command
+          2. target_type field from SPELLS_ALL cache
+          3. Profile SPELL_INFO ground_targeted flag (legacy compat)
+        Returns -1 if unknown.
+        """
+        resolved = self.resolve_spell_name(spell_name)
+        r = self._send(f"SPELL_TARGET_TYPE {resolved}")
+        if r and r not in ("UNKNOWN_CMD", "NOT_FOUND", "ERROR", ""):
+            try:
+                return int(r)
+            except (ValueError, TypeError):
+                pass
+
+        for s in self.get_spells():
+            if s.get("display") == resolved or s.get("name") == resolved:
+                tt = s.get("target_type")
+                if tt is not None:
+                    try:
+                        return int(tt)
+                    except (ValueError, TypeError):
+                        pass
+                break
+
+        info = self.get_spell_info(spell_name)
+        if info.get("ground_targeted"):
+            return SpellTargetType.GROUND
+
+        return -1
+
+    def is_ground_targeted(self, spell_name: str) -> bool:
+        """Check if a spell requires ground targeting (Ground or GroundSelf).
+
+        Uses live game data when available, falls back to profile SPELL_INFO.
+        """
+        tt = self.get_spell_target_type(spell_name)
+        if tt >= 0:
+            return SpellTargetType.is_ground(tt)
+        info = self.get_spell_info(spell_name)
+        return bool(info.get("ground_targeted"))
+
+    def get_spell_target_type_name(self, spell_name: str) -> str:
+        """Return the human-readable SpellTargetType name for a spell."""
+        tt = self.get_spell_target_type(spell_name)
+        return SpellTargetType.name(tt) if tt >= 0 else "Unknown"
 
     # ══════════════════════════════════════════════════════════════
     #  INTERNAL CAST HELPERS
@@ -2386,19 +2295,25 @@ class EthyToolConnection:
         if info.get("channel") and self.is_moving():
             return False
 
-        result = self.cast(name)
+        ground = self.is_ground_targeted(name)
+
+        if ground:
+            tt = self.get_spell_target_type(name)
+            if tt == SpellTargetType.GROUND_SELF:
+                result = self.cast_at_self(name)
+            elif self.has_target():
+                result = self.cast_at_target(name)
+            else:
+                result = self._cast_ground_fallback(name)
+        else:
+            result = self.cast(name)
+
         if not result:
             self._cast_failures[name] = self._cast_failures.get(name, 0) + 1
             if self._cast_failures[name] >= 3:
                 self._blocked_spells.add(name)
                 self.log(f"⚠ Blocked '{name}' — failed {self._cast_failures[name]}x (skill level too low?)")
             return False
-
-        # Ground-targeted spells (e.g. Poison Vial): cast twice to auto-confirm at same spot
-        if info.get("ground_targeted"):
-            delay = getattr(p, "GROUND_CAST_DELAY", 0.05) if p else 0.05
-            time.sleep(delay)
-            self.cast(name)  # second cast confirms placement (game reuses last spot)
 
         self._cast_failures.pop(name, None)
         self._state.trigger_gcd()
@@ -2439,7 +2354,19 @@ class EthyToolConnection:
         if self._state.on_gcd(): return False
         if not self.is_spell_ready(name): return False
         if not self.check_level_rules(name): return False
-        result = self.cast(name)
+
+        ground = self.is_ground_targeted(name)
+        if ground:
+            tt = self.get_spell_target_type(name)
+            if tt == SpellTargetType.GROUND_SELF:
+                result = self.cast_at_self(name)
+            elif self.has_target():
+                result = self.cast_at_target(name)
+            else:
+                result = self._cast_ground_fallback(name)
+        else:
+            result = self.cast(name)
+
         if not result:
             self._cast_failures[name] = self._cast_failures.get(name, 0) + 1
             if self._cast_failures[name] >= 3:
@@ -2530,6 +2457,72 @@ class EthyToolConnection:
         rotation = getattr(p, "ROTATION", [])
         for name in rotation:
             if self.try_cast(name):
+                return True
+
+        return False
+
+    def do_rotation_pro(self):
+        """Spirit Link stack-aware rotation for ranger-style builds.
+
+        Profile contract:
+          SPIRIT_LINK_ROTATION  — list of (spell, min_sl_stacks) tuples, priority order
+          SPIRIT_LINK_FOLLOW_UPS — dict {trigger_spell: follow_up_spell}
+          SPIRIT_LINK_BUFF       — internal buff name (default "SpiritLink")
+          ROTATION               — base spells with no stack requirement
+          PET_ROTATION           — pet abilities
+        Falls back to do_rotation() for profiles without SPIRIT_LINK_ROTATION.
+        """
+        import os as _os, json as _json, time as _time_mod, tempfile as _tmp
+        p = self.load_profile()
+        if not p:
+            return False
+        if self.do_meditation_if_low_mana():
+            return True
+
+        sl_rotation = getattr(p, "SPIRIT_LINK_ROTATION", None)
+        if not sl_rotation:
+            return self.do_rotation()
+
+        sl_buff   = getattr(p, "SPIRIT_LINK_BUFF", "SpiritLink")
+        sl_stacks = self.get_buff_stacks_count(sl_buff)
+        last_cast = self._state.last_cast
+        follow_ups = getattr(p, "SPIRIT_LINK_FOLLOW_UPS", {})
+        prof_ignored = getattr(p, "IGNORED_SPELLS", set())
+
+        def _ok(name):
+            return name not in IGNORED_SPELLS and name not in prof_ignored
+
+        # #region agent log
+        try:
+            _lp = _os.path.join(_tmp.gettempdir(), "debug-5ce2bb.log")
+            with open(_lp, "a") as _f:
+                _f.write(_json.dumps({"sessionId": "5ce2bb", "location": "ethytool_lib.py:do_rotation_pro", "message": "rotation_tick", "data": {"sl_stacks": sl_stacks, "last_cast": last_cast}, "timestamp": int(_time_mod.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
+        # Always complete the Spiritburst → Spiritlife combo before anything else
+        if last_cast in follow_ups:
+            follow = follow_ups[last_cast]
+            if follow and _ok(follow) and self.try_cast(follow):
+                return True
+
+        # Priority rotation — highest stack requirement first (already sorted in profile)
+        for entry in sl_rotation:
+            spell, min_stacks = entry[0], entry[1]
+            if not _ok(spell):
+                continue
+            if sl_stacks >= min_stacks and self.try_cast(spell):
+                return True
+
+        # Pet abilities (no stack requirement)
+        for name in getattr(p, "PET_ROTATION", []):
+            if _ok(name) and self.try_cast(name):
+                return True
+
+        # Base rotation — spells that work with 0 Spirit Link stacks
+        for name in getattr(p, "ROTATION", []):
+            if _ok(name) and self.try_cast(name):
                 return True
 
         return False
@@ -2963,319 +2956,6 @@ class EthyToolConnection:
         return 0
 
     # ══════════════════════════════════════════════════════════════
-    #  CONDITION HELPERS  (bitmask from PLAYER_CONDITION_MASK)
-    # ══════════════════════════════════════════════════════════════
-
-    # Known condition flag bits (update if game changes)
-    _COND_STUNNED  = 0x01
-    _COND_ROOTED   = 0x02
-    _COND_SILENCED = 0x04
-
-    def is_stunned(self) -> bool:
-        """True when the player's condition mask has the Stunned bit set."""
-        return bool(self.get_condition_mask() & self._COND_STUNNED)
-
-    def is_rooted(self) -> bool:
-        """True when the player's condition mask has the Rooted bit set."""
-        return bool(self.get_condition_mask() & self._COND_ROOTED)
-
-    def is_silenced(self) -> bool:
-        """True when the player's condition mask has the Silenced bit set."""
-        return bool(self.get_condition_mask() & self._COND_SILENCED)
-
-    def get_condition_details(self) -> dict:
-        """Decode condition mask into a readable dict.
-        Returns {'stunned': bool, 'rooted': bool, 'silenced': bool, 'mask': int}."""
-        mask = self.get_condition_mask()
-        return {
-            "stunned":  bool(mask & self._COND_STUNNED),
-            "rooted":   bool(mask & self._COND_ROOTED),
-            "silenced": bool(mask & self._COND_SILENCED),
-            "mask": mask,
-        }
-
-    def can_cast(self) -> bool:
-        """True if the player is alive, not silenced, and not stunned."""
-        if not self.is_alive():
-            return False
-        mask = self.get_condition_mask()
-        return not bool(mask & (self._COND_STUNNED | self._COND_SILENCED))
-
-    # ══════════════════════════════════════════════════════════════
-    #  BUFF QUERY HELPERS
-    # ══════════════════════════════════════════════════════════════
-
-    def get_buff_remaining(self, name: str, known_duration: float = 0.0) -> float:
-        """Estimated remaining duration (seconds) for a tracked buff.
-
-        Uses the local buff_timers recorded in CombatState when a spell was
-        cast via try_cast().  Pass *known_duration* from SPELL_INFO for accuracy.
-        Returns inf when duration is unknown, 0 if buff is not tracked."""
-        if name not in self._state.buff_timers:
-            return 0.0
-        if known_duration <= 0:
-            return float("inf")
-        elapsed = time.time() - self._state.buff_timers[name]
-        return max(0.0, known_duration - elapsed)
-
-    def get_buff_stacks_count(self, name: str) -> int:
-        """Query PLAYER_BUFFS and return the stack count for *name* (0 if not active)."""
-        nl = name.lower()
-        for b in self.get_player_buffs():
-            if b.get("name", "").lower() == nl:
-                return int(b.get("stacks", b.get("stack", 1)) or 1)
-        return 0
-
-    def get_buff_tracker(self) -> "BuffTracker":
-        """Get (or lazily create) the BuffTracker for this connection."""
-        if self._buff_tracker is None:
-            self._buff_tracker = BuffTracker(self)
-        return self._buff_tracker
-
-    # ══════════════════════════════════════════════════════════════
-    #  SMART TARGETING
-    # ══════════════════════════════════════════════════════════════
-
-    def smart_target_nearest(self, max_range: float = 60.0,
-                              exclude_critters: bool = True) -> dict:
-        """Target the highest-priority nearby enemy.
-
-        Priority order: boss → elite → rare → normal (closest within each tier).
-        Falls back to target_nearest() when scan_enemies() returns nothing."""
-        try:
-            enemies = self.scan_enemies()
-        except Exception:
-            enemies = []
-        if not enemies:
-            return self.target_nearest()
-        valid = [e for e in enemies if float(e.get("dist", 999)) <= max_range]
-        if exclude_critters:
-            valid = [e for e in valid if not e.get("critter", False)]
-        valid = [e for e in valid if float(e.get("hp", 0)) > 0]
-        if not valid:
-            return self.target_nearest()
-
-        def _tier(e):
-            if e.get("boss"):  return 0
-            if e.get("elite"): return 1
-            if e.get("rare"):  return 2
-            return 3
-
-        valid.sort(key=lambda e: (_tier(e), float(e.get("dist", 999))))
-        best = valid[0]
-        uid = best.get("uid")
-        if uid:
-            r = self._send(f"TARGET_BY_UID {uid}")
-            if r and "OK" in r:
-                return best
-        return self.target_nearest()
-
-    # ══════════════════════════════════════════════════════════════
-    #  AOE HELPERS
-    # ══════════════════════════════════════════════════════════════
-
-    def get_aoe_target_count(self, range_limit: float = 6.0) -> int:
-        """Count living, non-static enemies within *range_limit* units."""
-        try:
-            mobs = self.get_nearby_mobs()
-            return sum(
-                1 for m in mobs
-                if float(m.get("dist", 999)) <= range_limit
-                and not m.get("static", False)
-            )
-        except Exception:
-            return self.get_enemy_count(int(range_limit))
-
-    def should_aoe(self) -> bool:
-        """True when enemy count in AoE range meets the profile's AOE_THRESHOLD."""
-        p = self.load_profile()
-        if not p:
-            return False
-        thresh = getattr(p, "AOE_THRESHOLD", 3)
-        aoe_spells = getattr(p, "AOE_SPELLS", [])
-        if not aoe_spells:
-            return False
-        return self.get_aoe_target_count() >= thresh
-
-    # ══════════════════════════════════════════════════════════════
-    #  BURST PHASE
-    # ══════════════════════════════════════════════════════════════
-
-    def do_burst_phase(self) -> bool:
-        """Execute BURST_PHASE_SPELLS when burst conditions are met.
-
-        Profile format:
-            BURST_PHASE = {
-                "enabled": True,
-                "spells": ["Big Spell", "Nuke", ...],
-                "cd_trigger": "Big Spell",   # burst when this CD is ready
-                "min_stacks": 0,             # require stacks ≥ N
-                "min_hp": 0,                 # require enemy HP ≤ N% (0 = any)
-            }
-        Returns True if at least one burst spell was cast."""
-        p = self.load_profile()
-        if not p:
-            return False
-        burst = getattr(p, "BURST_PHASE", {})
-        if not burst or not burst.get("enabled", False):
-            return False
-        spells = burst.get("spells", [])
-        if not spells:
-            return False
-        trigger = burst.get("cd_trigger")
-        if trigger and not self.is_spell_ready(trigger):
-            return False
-        min_stacks = burst.get("min_stacks", 0)
-        if min_stacks > 0 and self.get_fury_stacks() < min_stacks:
-            return False
-        min_hp = burst.get("min_hp", 0)
-        if min_hp > 0:
-            t_hp = self.get_target_hp()
-            if t_hp > min_hp:
-                return False
-        casted = False
-        for name in spells:
-            if name not in IGNORED_SPELLS and self.try_cast(name):
-                casted = True
-        return casted
-
-    # ══════════════════════════════════════════════════════════════
-    #  DOT ROTATION
-    # ══════════════════════════════════════════════════════════════
-
-    def do_dot_rotation(self) -> bool:
-        """Reapply any DoTs listed in profile's DOT_SPELLS that are missing
-        or about to expire.
-
-        Profile format:
-            DOT_SPELLS = {"Poison Strike": 12.0, "Rupture": 8.0}
-            DOT_REFRESH_AT = 2.0   # re-cast when < 2s remaining
-
-        Records the application via get_buff_tracker().dot_applied() automatically.
-        Returns True if a DoT was (re)applied."""
-        p = self.load_profile()
-        if not p:
-            return False
-        dot_spells = getattr(p, "DOT_SPELLS", {})
-        if not dot_spells:
-            return False
-        bt = self.get_buff_tracker()
-        refresh_at = getattr(p, "DOT_REFRESH_AT", 2.0)
-        for name, duration in dot_spells.items():
-            if bt.dot_needs_refresh(name, duration, refresh_at):
-                if self.try_cast(name):
-                    bt.dot_applied(name, duration)
-                    return True
-        return False
-
-    # ══════════════════════════════════════════════════════════════
-    #  INTERRUPT
-    # ══════════════════════════════════════════════════════════════
-
-    def interrupt_target(self) -> bool:
-        """Cast the profile's INTERRUPT_SPELL against the current target.
-        Uses try_cast_emergency() to bypass stack/HP rules.
-        Returns True if the interrupt was cast."""
-        p = self.load_profile()
-        if not p:
-            return False
-        spell = getattr(p, "INTERRUPT_SPELL", None)
-        if not spell:
-            return False
-        return self.try_cast_emergency(spell)
-
-    def is_target_casting(self) -> bool:
-        """Heuristic: True when the target's animation state suggests it is
-        casting or channelling (animation state 2 or 3)."""
-        try:
-            anim = self.get_target_animation()
-            return int(anim.get("state", 0)) in (2, 3)
-        except Exception:
-            return False
-
-    # ══════════════════════════════════════════════════════════════
-    #  ENHANCED ROTATION ENGINE  (do_rotation_pro)
-    # ══════════════════════════════════════════════════════════════
-
-    def do_rotation_pro(self) -> bool:
-        """Drop-in replacement for do_rotation() with extended features:
-
-        Priority order per tick:
-          1. Meditation (if mana critical)
-          2. Interrupt  (if target is casting and profile has INTERRUPT_SPELL)
-          3. Emergency defensive (if HP below EMERGENCY_HP)
-          4. Burst phase (if CDs aligned and conditions met)
-          5. DoT maintenance (missing / expiring DoTs from DOT_SPELLS)
-          6. Mana builders (MANA_BUILDER_PRIORITY)
-          7. Stack priority spell (STACK_RULES)
-          8. Pet rotation (PET_ROTATION)
-          9. AoE when threshold met (AOE_SPELLS)
-         10. Main rotation (ROTATION)
-
-        Returns True if any spell was cast this tick."""
-        p = self.load_profile()
-        if not p:
-            return self.do_rotation()
-
-        if self.do_meditation_if_low_mana():
-            return True
-
-        # Interrupt target if casting
-        if is_target_casting := self.is_target_casting():
-            if self.interrupt_target():
-                return True
-
-        # Emergency survivability
-        hp = self.get_hp_pct()
-        emergency_hp = getattr(p, "EMERGENCY_HP", 20)
-        if hp < emergency_hp:
-            if self.do_defend():
-                return True
-
-        # Burst phase
-        if self.do_burst_phase():
-            return True
-
-        # DoT maintenance
-        if self.do_dot_rotation():
-            return True
-
-        # Mana builders
-        for name in getattr(p, "MANA_BUILDER_PRIORITY", []):
-            if name not in IGNORED_SPELLS and self.try_cast(name):
-                return True
-
-        # Stack priority spells
-        if getattr(p, "STACK_ENABLED", False):
-            stacks = self.get_fury_stacks()
-            prio = self.get_priority_spell(stacks, hp)
-            if prio and self.try_cast(prio):
-                return True
-
-        # Pet rotation
-        for name in getattr(p, "PET_ROTATION", []):
-            if name not in IGNORED_SPELLS and self.try_cast(name):
-                return True
-
-        # AoE when threshold met
-        aoe_thresh = getattr(p, "AOE_THRESHOLD", 3)
-        aoe_spells = getattr(p, "AOE_SPELLS", [])
-        try:
-            if aoe_spells and self.get_aoe_target_count() >= aoe_thresh:
-                for name in aoe_spells:
-                    if name not in IGNORED_SPELLS and self.try_cast(name):
-                        return True
-        except Exception:
-            pass
-
-        # Main rotation
-        for name in getattr(p, "ROTATION", []):
-            if self.try_cast(name):
-                return True
-
-        return False
-
-    # ══════════════════════════════════════════════════════════════
     #  STATS
     # ══════════════════════════════════════════════════════════════
 
@@ -3329,7 +3009,7 @@ class EthyToolConnection:
             if "=" not in pair: continue
             k, v = pair.split("=", 1)
             if k in ("name", "display", "cat", "job"): data[k] = v; continue
-            NUMERIC_KEYS = ("uid", "stack", "rarity", "equip", "quality", "mana",
+            NUMERIC_KEYS = ("uid", "stack", "stacks", "rarity", "equip", "quality", "mana",
                            "of", "cont", "max_hp", "max_mp", "dir", "idx", "index")
             if v in ("0", "1") and k not in NUMERIC_KEYS:
                 data[k] = v == "1"; continue

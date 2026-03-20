@@ -1,105 +1,199 @@
 @echo off
-REM EthyTool — Full Install (Dependencies + Defender + Firewall)
-REM Run as Admin for full setup. Right-click -> Run as administrator.
+REM ================================================================
+REM  EthyTool — Full Installer
+REM  Does EVERYTHING in one shot. Right-click -> Run as Administrator.
+REM ================================================================
 
 setlocal enabledelayedexpansion
-title EthyTool — Full Install
+title EthyTool — Full Installer
+color 0A
 
-:: ── Self-elevate to Admin if not already ─────────────────────────
+:: ── Self-elevate to Admin ──────────────────────────────────────
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Requesting Administrator privileges...
+    echo  Requesting Administrator privileges...
     powershell -Command "Start-Process '%~f0' -Verb RunAs"
     exit /b 0
 )
 
-echo.
-echo ============================================================
-echo   EthyTool — Full Install (Run Out of the Box)
-echo ============================================================
-echo.
-echo  This will:
-echo    1. Install Visual C++ Redistributable (required by OpenCV/numpy)
-echo    2. Add Windows Defender exclusion for this folder
-echo    3. Add Firewall rules for EthyTool.exe
-echo    4. Install Python packages (optional, for build/run-from-source)
-echo.
-echo  Run as Administrator for all steps.
-echo.
-pause
-
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "EXE=%SCRIPT_DIR%\EthyTool.exe"
+set "DLL=%SCRIPT_DIR%\EthyTool.dll"
+set "REQ=%SCRIPT_DIR%\requirements.txt"
 
-:: ── 1. Visual C++ Redistributable ──────────────────────────────
 echo.
-echo [1/4] Visual C++ Redistributable (x64)
+echo  ================================================================
+echo    EthyTool  -  Full Installer
+echo  ================================================================
+echo.
+echo    This will:
+echo      [1] Install Visual C++ Redistributable (for OpenCV/numpy)
+echo      [2] Add Windows Defender exclusion
+echo      [3] Add Firewall rules (inbound + outbound)
+echo      [4] Install Python + all pip packages
+echo      [5] Run quick diagnostics
+echo.
+echo  ================================================================
+echo.
+pause
+
+:: ================================================================
+::  STEP 1 — Visual C++ Redistributable
+:: ================================================================
+echo.
+echo  [1/5] Visual C++ Redistributable (x64)
+echo  -----------------------------------------------
 reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" /v Installed >nul 2>&1
 if not errorlevel 1 (
-    echo     Already installed.
+    echo    Already installed. Skipping.
 ) else (
-    echo     Downloading...
+    echo    Downloading from Microsoft...
     powershell -NoProfile -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile '%TEMP%\vc_redist.x64.exe' -UseBasicParsing }"
     if errorlevel 1 (
-        echo     [ERROR] Download failed. Check internet. Manual: https://aka.ms/vs/17/release/vc_redist.x64.exe
+        echo    [ERROR] Download failed. Manual: https://aka.ms/vs/17/release/vc_redist.x64.exe
     ) else (
-        echo     Installing...
+        echo    Installing silently...
         "%TEMP%\vc_redist.x64.exe" /install /quiet /norestart
-        if errorlevel 1 (echo     [WARN] Install failed - try manual install) else (echo     Installed.)
+        if errorlevel 1 (
+            echo    [WARN] Install may have failed. Try manual install.
+        ) else (
+            echo    Done.
+        )
     )
 )
 
-:: ── 2. Windows Defender exclusion ───────────────────────────────
+:: ================================================================
+::  STEP 2 — Windows Defender Exclusion
+:: ================================================================
 echo.
-echo [2/4] Windows Defender exclusion
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $path = '%SCRIPT_DIR%'; $p = Get-MpPreference -ErrorAction SilentlyContinue; if ($p) { $existing = $p.ExclusionPath | Where-Object { $_ -like '*EthyTool*' -or $_ -eq $path }; if ($existing) { Write-Host '    Already excluded.' } else { Add-MpPreference -ExclusionPath $path; Write-Host '    Added exclusion for:' $path } } else { Write-Host '    Defender not active or inaccessible.' } }"
-if errorlevel 1 (
-    echo     [WARN] Could not add exclusion. Add manually in Windows Security.
+echo  [2/5] Windows Defender Exclusion
+echo  -----------------------------------------------
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$path = '%SCRIPT_DIR%';" ^
+  "try {" ^
+  "  $p = Get-MpPreference -ErrorAction Stop;" ^
+  "  $hit = $p.ExclusionPath | Where-Object { $_ -eq $path };" ^
+  "  if ($hit) { Write-Host '    Already excluded.' }" ^
+  "  else { Add-MpPreference -ExclusionPath $path -ErrorAction Stop; Write-Host '    Exclusion added:' $path }" ^
+  "} catch { Write-Host '    [WARN] Could not set exclusion. Add manually in Windows Security.' }"
+
+:: ================================================================
+::  STEP 3 — Firewall Rules (Inline — no external PS1)
+:: ================================================================
+echo.
+echo  [3/5] Firewall Rules
+echo  -----------------------------------------------
+if exist "!EXE!" (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+      "$exe = '!EXE!';" ^
+      "$inR = Get-NetFirewallRule -DisplayName 'EthyTool Inbound' -ErrorAction SilentlyContinue;" ^
+      "if ($inR) { Write-Host '    Inbound rule exists.' }" ^
+      "else { New-NetFirewallRule -DisplayName 'EthyTool Inbound' -Direction Inbound -Program $exe -Action Allow -Profile Any | Out-Null; Write-Host '    Inbound rule added.' };" ^
+      "$outR = Get-NetFirewallRule -DisplayName 'EthyTool Outbound' -ErrorAction SilentlyContinue;" ^
+      "if ($outR) { Write-Host '    Outbound rule exists.' }" ^
+      "else { New-NetFirewallRule -DisplayName 'EthyTool Outbound' -Direction Outbound -Program $exe -Action Allow -Profile Any | Out-Null; Write-Host '    Outbound rule added.' }"
+) else (
+    echo    EthyTool.exe not found yet. Firewall rules skipped.
+    echo    Re-run after building or placing EthyTool.exe in this folder.
 )
 
-:: ── 3. Firewall rules ───────────────────────────────────────────
-echo.
-echo [3/4] Firewall rules
-:: Use temp file to pass path (avoids "unexpected at this time" when path has parentheses)
-set "EXE_PATH_FILE=%TEMP%\ethytool_exe_path.txt"
-echo !EXE!> "!EXE_PATH_FILE!"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_firewall.ps1" -PathFile "!EXE_PATH_FILE!"
-if errorlevel 1 (
-    echo     [WARN] Firewall rules failed or EthyTool.exe not found.
-)
-del "!EXE_PATH_FILE!" 2>nul
+:: Also add firewall rule for the game exe if found
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$game = Get-Process -Name '*ethyrial*' -ErrorAction SilentlyContinue | Select-Object -First 1;" ^
+  "if ($game) {" ^
+  "  $gamePath = $game.Path;" ^
+  "  $r = Get-NetFirewallRule -DisplayName 'Ethyrial Game' -ErrorAction SilentlyContinue;" ^
+  "  if (-not $r) { New-NetFirewallRule -DisplayName 'Ethyrial Game' -Direction Inbound -Program $gamePath -Action Allow -Profile Any | Out-Null; Write-Host '    Game firewall rule added.' }" ^
+  "  else { Write-Host '    Game firewall rule exists.' }" ^
+  "} else { Write-Host '    Game not running — game firewall rule skipped.' }"
 
-:: ── 4. Python dependencies (optional, for build) ──────────────────
+:: ================================================================
+::  STEP 4 — Python + All Pip Packages
+:: ================================================================
 echo.
-echo [4/4] Python dependencies (optional)
-set "REQ=!SCRIPT_DIR!\requirements.txt"
-if exist "!REQ!" (
-    where python >nul 2>&1
+echo  [4/5] Python Dependencies
+echo  -----------------------------------------------
+
+where python >nul 2>&1
+if !errorlevel! neq 0 (
+    echo    Python not found on PATH.
+    echo    Attempting to install via winget...
+    winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1
     if !errorlevel! equ 0 (
-        echo     Installing packages from requirements.txt...
-        python -m pip install -r "!REQ!" --upgrade
-        if !errorlevel! equ 0 (echo     Done.) else (echo     [WARN] pip had errors.)
+        echo    Python installed. You may need to restart this script.
+        echo    Refreshing PATH...
+        set "PATH=%PATH%;%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts"
     ) else (
-        echo     Python not found - skipping. EthyTool.exe is self-contained.
+        echo    [WARN] Could not auto-install Python.
+        echo    Download manually: https://www.python.org/downloads/
+        echo    Skipping pip install.
+        goto :skip_pip
+    )
+)
+
+echo    Python found. Upgrading pip...
+python -m pip install --upgrade pip >nul 2>&1
+
+if exist "!REQ!" (
+    echo    Installing all packages from requirements.txt...
+    python -m pip install -r "!REQ!" --upgrade
+    if !errorlevel! equ 0 (
+        echo    All packages installed successfully.
+    ) else (
+        echo    [WARN] Some packages had errors. Check output above.
     )
 ) else (
-    echo     requirements.txt not found - skipping.
+    echo    [WARN] requirements.txt not found at: !REQ!
 )
 
-:: ── Summary ──────────────────────────────────────────────────────
+:skip_pip
+
+:: ================================================================
+::  STEP 5 — Quick Diagnostics
+:: ================================================================
 echo.
-echo ============================================================
-echo   Done
-echo ============================================================
+echo  [5/5] Quick Diagnostics
+echo  -----------------------------------------------
+
+echo    Files:
+if exist "!EXE!" (echo      EthyTool.exe .... OK) else (echo      EthyTool.exe .... MISSING)
+if exist "!DLL!" (echo      EthyTool.dll .... OK) else (echo      EthyTool.dll .... MISSING)
+if exist "!REQ!" (echo      requirements.txt  OK) else (echo      requirements.txt  MISSING)
+
 echo.
-echo  Next steps:
-echo    1. Launch Ethyrial (game)
-echo    2. Run EthyTool.exe as Administrator
-echo    3. Inject EthyTool.dll into the game
-echo    4. Click Connect
+echo    Game process:
+powershell -NoProfile -Command ^
+  "$p = Get-Process -Name '*ethyrial*' -ErrorAction SilentlyContinue;" ^
+  "if ($p) { $p | ForEach-Object { Write-Host '      PID' $_.Id '-' $_.ProcessName } }" ^
+  "else { Write-Host '      Not running' }"
+
 echo.
-echo  If pipe issues: run check_pipe_block.bat
-echo ============================================================
+echo    Named pipes:
+powershell -NoProfile -Command ^
+  "$pipes = Get-ChildItem '\\.\pipe\' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'EthyTool*' };" ^
+  "if ($pipes) { $pipes | ForEach-Object { Write-Host '      ' $_.Name } }" ^
+  "else { Write-Host '      None found (inject DLL first)' }"
+
+:: ================================================================
+::  DONE
+:: ================================================================
+echo.
+echo  ================================================================
+echo    Install Complete
+echo  ================================================================
+echo.
+echo    Next steps:
+echo      1. Launch Ethyrial (the game)
+echo      2. Run EthyTool.exe as Administrator
+echo      3. Click Inject in the launcher
+echo.
+echo    Troubleshooting:
+echo      - Pipe not found? Make sure DLL is injected
+echo      - AV blocking? Check Defender exclusion above
+echo      - Run this script again after game is running for
+echo        full diagnostics
+echo.
+echo  ================================================================
 echo.
 pause
