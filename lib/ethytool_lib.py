@@ -5,7 +5,6 @@ Scripts import this directly or use create_connection().
 
 import time
 import math
-import threading
 import ctypes
 import ctypes.wintypes
 import importlib.util
@@ -173,6 +172,7 @@ class CombatState:
         self.stacks = 0
         self.max_stacks = 20
         self.stack_decay_time = 8.0
+        self.stack_id = None
         self.last_combat_time = time.time()
         self.last_gcd = 0
         self.gcd = 0.5
@@ -233,6 +233,133 @@ class CombatState:
 
 
 # ══════════════════════════════════════════════════════════════
+#  Shared Memory — zero-copy hot-path reads (HP, pos, target)
+#
+#  Layout mirrors the C++ SharedGameState struct (#pragma pack 1).
+#  Updated every frame (~16 ms) by the main-thread Update hook.
+# ══════════════════════════════════════════════════════════════
+
+_k32.OpenFileMappingA.argtypes = [
+    ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.c_char_p,
+]
+_k32.OpenFileMappingA.restype = ctypes.wintypes.HANDLE
+
+_k32.MapViewOfFile.argtypes = [
+    ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+    ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.c_size_t,
+]
+_k32.MapViewOfFile.restype = ctypes.c_void_p
+
+_k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+_k32.UnmapViewOfFile.restype = ctypes.wintypes.BOOL
+
+_FILE_MAP_READ = 0x0004
+
+
+class _SharedLayout(ctypes.Structure):
+    """Mirrors the C++ SharedGameState struct (pack=1)."""
+    _pack_ = 1
+    _fields_ = [
+        ("magic",          ctypes.c_uint32),
+        ("version",        ctypes.c_uint32),
+        ("frameCount",     ctypes.c_uint32),
+        ("hp",             ctypes.c_float),
+        ("mp",             ctypes.c_float),
+        ("x",              ctypes.c_float),
+        ("y",              ctypes.c_float),
+        ("z",              ctypes.c_float),
+        ("maxHp",          ctypes.c_int32),
+        ("maxMp",          ctypes.c_int32),
+        ("direction",      ctypes.c_int32),
+        ("inCombat",       ctypes.c_uint8),
+        ("isMoving",       ctypes.c_uint8),
+        ("isFrozen",       ctypes.c_uint8),
+        ("isDead",         ctypes.c_uint8),
+        ("job",            ctypes.c_char * 64),
+        ("name",           ctypes.c_char * 128),
+        ("uid",            ctypes.c_int32),
+        ("moveSpeed",      ctypes.c_float),
+        ("atkSpeed",       ctypes.c_float),
+        ("food",           ctypes.c_float),
+        ("inPzZone",       ctypes.c_uint8),
+        ("inWildlands",    ctypes.c_uint8),
+        ("hasTarget",      ctypes.c_uint8),
+        ("targetName",     ctypes.c_char * 128),
+        ("targetHp",       ctypes.c_float),
+        ("targetUid",      ctypes.c_int32),
+        ("targetMaxHp",    ctypes.c_int32),
+        ("targetBoss",     ctypes.c_uint8),
+        ("targetElite",    ctypes.c_uint8),
+        ("targetRare",     ctypes.c_uint8),
+        ("targetCritter",  ctypes.c_uint8),
+        ("targetInCombat", ctypes.c_uint8),
+        ("lastWriteMs",    ctypes.c_uint64),
+        ("_reserved",      ctypes.c_uint8 * 128),
+    ]
+
+_SHM_SIZE  = ctypes.sizeof(_SharedLayout)
+_SHM_MAGIC = 0x45544859  # 'ETHY'
+
+
+class SharedGameState:
+    """Read-only view into the C++ shared memory snapshot.
+
+    Usage::
+
+        shm = SharedGameState(pid)
+        if shm.connect():
+            snap = shm.read()
+            print(snap.hp, snap.x, snap.y)
+    """
+
+    def __init__(self, pid: int):
+        self._pid = pid
+        self._handle = None
+        self._ptr = None
+
+    def connect(self) -> bool:
+        if self._ptr:
+            return True
+        name = f"Local\\EthyToolShared_{self._pid}".encode("ascii")
+        handle = _k32.OpenFileMappingA(_FILE_MAP_READ, False, name)
+        if not handle:
+            return False
+        ptr = _k32.MapViewOfFile(handle, _FILE_MAP_READ, 0, 0, _SHM_SIZE)
+        if not ptr:
+            _k32.CloseHandle(handle)
+            return False
+        self._handle = handle
+        self._ptr = ptr
+        return True
+
+    def disconnect(self):
+        if self._ptr:
+            _k32.UnmapViewOfFile(self._ptr)
+            self._ptr = None
+        if self._handle:
+            _k32.CloseHandle(self._handle)
+            self._handle = None
+
+    @property
+    def available(self) -> bool:
+        return self._ptr is not None
+
+    def read(self) -> Optional[_SharedLayout]:
+        """Return a snapshot copy, or None if not connected / invalid."""
+        if not self._ptr:
+            return None
+        buf = (ctypes.c_char * _SHM_SIZE)()
+        ctypes.memmove(buf, self._ptr, _SHM_SIZE)
+        snap = _SharedLayout.from_buffer_copy(buf)
+        if snap.magic != _SHM_MAGIC:
+            return None
+        return snap
+
+    def __del__(self):
+        self.disconnect()
+
+
+# ══════════════════════════════════════════════════════════════
 #  Connection
 # ══════════════════════════════════════════════════════════════
 
@@ -242,12 +369,12 @@ class EthyToolConnection:
 
     def __init__(self, pid=None):
         self._handle = None
-        self._lock = threading.Lock()
         self._pid = pid
         self._pipe_name = f"{self.PIPE_BASE}_{pid}" if pid else None
         self._state = CombatState()
         self._profile_cache = None
         self._log_fn = lambda msg: print(msg, flush=True)
+        self._shared: Optional[SharedGameState] = None
         self._cast_failures = {}
         self._blocked_spells = set()
         self._pet_attacked_uid = None
@@ -282,6 +409,7 @@ class EthyToolConnection:
                 handle = _try_connect_pipe(self._pipe_name)
                 if handle:
                     self._handle = handle
+                    self._connect_shared_memory()
                     return True
             else:
                 handle = _try_connect_pipe(self.PIPE_BASE)
@@ -289,6 +417,7 @@ class EthyToolConnection:
                     self._handle = handle
                     self._pipe_name = self.PIPE_BASE
                     self._pid = 0
+                    self._connect_shared_memory()
                     return True
                 for game_pid in _find_game_pids():
                     pipe = f"{self.PIPE_BASE}_{game_pid}"
@@ -297,11 +426,25 @@ class EthyToolConnection:
                         self._handle = handle
                         self._pipe_name = pipe
                         self._pid = game_pid
+                        self._connect_shared_memory()
                         return True
             time.sleep(0.5)
         return False
 
+    def _connect_shared_memory(self):
+        """Attempt to open the shared memory region (non-fatal on failure)."""
+        if self._shared:
+            return
+        if not self._pid:
+            return
+        shm = SharedGameState(self._pid)
+        if shm.connect():
+            self._shared = shm
+
     def disconnect(self):
+        if self._shared:
+            self._shared.disconnect()
+            self._shared = None
         if self._handle:
             _k32.CloseHandle(self._handle)
             self._handle = None
@@ -315,25 +458,83 @@ class EthyToolConnection:
         return self._handle is not None
 
     # ──────────────────────────────────────────────────────────
+    #  shared memory fast path
+    # ──────────────────────────────────────────────────────────
+
+    @property
+    def shared(self) -> Optional[SharedGameState]:
+        """The SharedGameState reader, or None if unavailable."""
+        return self._shared
+
+    def read_shared(self) -> Optional[_SharedLayout]:
+        """Return the latest shared memory snapshot, or None."""
+        if self._shared:
+            return self._shared.read()
+        return None
+
+    def fast_hp(self) -> Optional[float]:
+        """HP via shared memory (~0 us) with pipe fallback."""
+        snap = self.read_shared()
+        if snap:
+            return snap.hp
+        r = self._send("PLAYER_HP")
+        return self._float(r) if r else None
+
+    def fast_mp(self) -> Optional[float]:
+        """MP via shared memory (~0 us) with pipe fallback."""
+        snap = self.read_shared()
+        if snap:
+            return snap.mp
+        r = self._send("PLAYER_MP")
+        return self._float(r) if r else None
+
+    def fast_pos(self) -> Optional[tuple]:
+        """(x, y, z) via shared memory with pipe fallback."""
+        snap = self.read_shared()
+        if snap:
+            return (snap.x, snap.y, snap.z)
+        r = self._send("PLAYER_POS")
+        if not r:
+            return None
+        parts = r.split(",")
+        if len(parts) >= 3:
+            return (float(parts[0]), float(parts[1]), float(parts[2]))
+        return None
+
+    def fast_combat(self) -> bool:
+        """In-combat flag via shared memory with pipe fallback."""
+        snap = self.read_shared()
+        if snap:
+            return bool(snap.inCombat)
+        return self._send("PLAYER_COMBAT") == "1"
+
+    def fast_target_hp(self) -> Optional[float]:
+        """Target HP via shared memory with pipe fallback."""
+        snap = self.read_shared()
+        if snap and snap.hasTarget:
+            return snap.targetHp
+        r = self._send("TARGET_HP")
+        return self._float(r) if r else None
+
+    # ──────────────────────────────────────────────────────────
     #  send / receive
     # ──────────────────────────────────────────────────────────
 
     def _send(self, command):
         if not self._handle:
             return None
-        with self._lock:
-            try:
-                data = command.encode("utf-8")
-                written = ctypes.wintypes.DWORD(0)
-                ok = _k32.WriteFile(self._handle, data, len(data), ctypes.byref(written), None)
-                if not ok: return None
-                buf = ctypes.create_string_buffer(65536)
-                read_bytes = ctypes.wintypes.DWORD(0)
-                ok = _k32.ReadFile(self._handle, buf, 65536, ctypes.byref(read_bytes), None)
-                if not ok: return None
-                return buf.value[:read_bytes.value].decode("utf-8")
-            except Exception:
-                return None
+        try:
+            data = command.encode("utf-8")
+            written = ctypes.wintypes.DWORD(0)
+            ok = _k32.WriteFile(self._handle, data, len(data), ctypes.byref(written), None)
+            if not ok: return None
+            buf = ctypes.create_string_buffer(65536)
+            read_bytes = ctypes.wintypes.DWORD(0)
+            ok = _k32.ReadFile(self._handle, buf, 65536, ctypes.byref(read_bytes), None)
+            if not ok: return None
+            return buf.value[:read_bytes.value].decode("utf-8")
+        except Exception:
+            return None
 
     @staticmethod
     def find_all_pipes():
@@ -675,59 +876,61 @@ class EthyToolConnection:
             return False
 
     def target_nearest(self):
-        """Target the nearest valid enemy (critters excluded, range ≤ 60).
+        """Target the nearest valid enemy (critters excluded).
+
+        Selection is done Python-side: scan_enemies() → sort by dist →
+        target_entity(uid).  The DLL only provides raw entity data and
+        the low-level targeting call.
+
         Returns a dict with name/uid/dist/hp/max_hp/boss/elite/rare/combat/count,
         or None if no enemies are nearby."""
-        r = self._send("TARGET_NEAREST")
-        if not r or "OK" not in r:
+        enemies = self.scan_enemies()
+        candidates = [e for e in enemies if not e.get("critter")]
+        if not candidates:
             return None
-        d = self._parse_kv(r.lstrip("OK|"))
-        for flag in ("boss", "elite", "rare", "combat"):
-            d[flag] = bool(int(d.get(flag, 0)))
-        for fkey in ("hp", "dist"):
-            try:
-                d[fkey] = float(d.get(fkey, 0))
-            except (ValueError, TypeError):
-                d[fkey] = 0.0
-        for ikey in ("uid", "max_hp", "count"):
-            try:
-                d[ikey] = int(d.get(ikey, 0))
-            except (ValueError, TypeError):
-                d[ikey] = 0
-        return d if d.get("name") else None
+        candidates.sort(key=lambda e: e.get("dist", 999.0))
+        pick = candidates[0]
+        uid = pick.get("uid", 0)
+        if uid:
+            self.target_entity(uid)
+        pick["count"] = len(candidates)
+        return pick
 
     def target_nearest_filtered(self, exclude_critters=True, max_range=60.0,
                                  min_hp=0.0, name=None):
         """Target the nearest enemy matching optional filters.
+
+        Selection and filtering are done Python-side using scan_enemies()
+        data.  The DLL only provides raw entity data and the low-level
+        targeting call.
+
         exclude_critters — skip critters (default True)
         max_range        — maximum targeting distance in units (default 60)
         min_hp           — minimum HP percent 0.0–1.0 (default 0.0)
         name             — case-insensitive substring to match enemy name
         Returns the same dict as target_nearest(), or None on failure."""
-        parts = [f"TARGET_NEAREST_FILTERED",
-                 f"exclude_critters={'1' if exclude_critters else '0'}",
-                 f"max_range={max_range:.1f}",
-                 f"min_hp={min_hp:.3f}"]
-        if name:
-            parts.append(f"name={name}")
-        cmd = " ".join(parts)
-        r = self._send(cmd)
-        if not r or "OK" not in r:
+        enemies = self.scan_enemies()
+        candidates = []
+        name_lower = name.lower() if name else None
+        for e in enemies:
+            if exclude_critters and e.get("critter"):
+                continue
+            if e.get("dist", 999.0) > max_range:
+                continue
+            if min_hp > 0.0 and e.get("hp", 0.0) < min_hp:
+                continue
+            if name_lower and name_lower not in e.get("name", "").lower():
+                continue
+            candidates.append(e)
+        if not candidates:
             return None
-        d = self._parse_kv(r.lstrip("OK|"))
-        for flag in ("boss", "elite", "rare", "combat"):
-            d[flag] = bool(int(d.get(flag, 0)))
-        for fkey in ("hp", "dist"):
-            try:
-                d[fkey] = float(d.get(fkey, 0))
-            except (ValueError, TypeError):
-                d[fkey] = 0.0
-        for ikey in ("uid", "max_hp", "count"):
-            try:
-                d[ikey] = int(d.get(ikey, 0))
-            except (ValueError, TypeError):
-                d[ikey] = 0
-        return d if d.get("name") else None
+        candidates.sort(key=lambda e: e.get("dist", 999.0))
+        pick = candidates[0]
+        uid = pick.get("uid", 0)
+        if uid:
+            self.target_entity(uid)
+        pick["count"] = len(candidates)
+        return pick
 
     def scan_enemies(self):
         """SCAN_ENEMIES: list all nearby hostile enemies (critters excluded, range ≤ 60).
@@ -1004,6 +1207,14 @@ class EthyToolConnection:
         Returns hex response or ERROR:message."""
         return self._send(f"NET_TCP_SENDRECV {host} {port} {hex_payload} {timeout_ms}")
 
+    def dump_net_classes(self):
+        """DUMP_NET_CLASSES: dump all network-related IL2CPP classes."""
+        return self._send("DUMP_NET_CLASSES") or ""
+
+    def dump_net_instance(self, class_name):
+        """DUMP_NET_INSTANCE <class>: dump fields/state of a network class instance."""
+        return self._send(f"DUMP_NET_INSTANCE {class_name}") or ""
+
     # ══════════════════════════════════════════════════════════════
     #  AUTOCAST
     # ══════════════════════════════════════════════════════════════
@@ -1100,7 +1311,27 @@ class EthyToolConnection:
     def set_friendly_target(self, name):
         return self.target_friendly_by_name(name)
 
-    # ═══════════════════════���══════════════════════════════════════
+    def target_entity(self, uid):
+        """TARGET_ENTITY <uid>: target any entity by UID (searches nearby then scene).
+        Returns True on success."""
+        r = self._send(f"TARGET_ENTITY {uid}")
+        return r == "OK"
+
+    def follow_entity(self, uid):
+        """FOLLOW_ENTITY <uid>: follow an entity by UID (pathfind + follow at 2u range).
+        Returns True on success."""
+        r = self._send(f"FOLLOW_ENTITY {uid}")
+        return r == "OK"
+
+    def autorun_on(self):
+        """AUTORUN_ON: enable autorun on the local player."""
+        return self._send("AUTORUN_ON") == "OK"
+
+    def autorun_off(self):
+        """AUTORUN_OFF: disable autorun on the local player."""
+        return self._send("AUTORUN_OFF") == "OK"
+
+    # ══════════════════════════════════════════════════════════════
     #  NEARBY ENTITIES
     # ══════════════════════════════════════════════════════════════
 
@@ -1387,9 +1618,13 @@ class EthyToolConnection:
 
     def use_entity(self, name):
         """Use/interact with nearby entity by name filter. Game auto-gathers/attacks.
-        Returns True on success."""
+        Returns True on success (OK_USED or OK_USE_ENTITY in response)."""
         r = self._send(f"USE_ENTITY_{name}")
-        return r is not None and ("OK_USED" in r or "OK_USE_ENTITY" in r)
+        if r is None:
+            return False
+        if "OK_USED" not in r and "OK_USE_ENTITY" not in r:
+            return False
+        return True
 
     # ══════════════════════════════════════════════════════════════
     #  GATHER NODES
@@ -1427,8 +1662,27 @@ class EthyToolConnection:
         return results
 
     def scan_nodes(self, name_filter="", usable_only=False):
-        """NODE_SCAN: all gather nodes within 60u. Returns list of dicts with
-        ptr, class, name, type, usable, used, static, x, y, z, dist."""
+        """Scan gather nodes within 60 units of the player.
+
+        The *name_filter* is a substring matched against each node's name
+        on the C++ side (case-insensitive).  Common filters:
+          ""           — all nodes
+          "herb"       — herb nodes (Rinthistle, etc.)
+          "ore"        — ore veins
+          "wood"/"tree"— wood nodes
+          "fish"       — fishing spots
+
+        Use get_node_types() to discover what names/types are nearby.
+
+        Wire format (C++ command built from args):
+          NODE_SCAN                          — all, 60u
+          NODE_SCAN_<filter>                 — name-filtered, 60u
+          NODE_SCAN_USABLE                   — usable-only, 60u
+          NODE_SCAN_USABLE_<filter>          — usable + name-filtered, 60u
+
+        Returns list of dicts: ptr, class, name, type, usable, used,
+        static, x, y, z, dist.
+        """
         if name_filter and usable_only:
             cmd = f"NODE_SCAN_USABLE_{name_filter}"
         elif usable_only:
@@ -1464,17 +1718,132 @@ class EthyToolConnection:
         results.sort(key=lambda e: e.get("_live_dist", 999.0))
         return results
 
-    def gather_nearest(self, name_filter=""):
-        """GATHER_NEAREST: move to and use the closest usable gather node.
-        Returns dict with class, name, type, dist, ptr, invoke (0=OK) or None."""
-        cmd = f"GATHER_NEAREST_{name_filter}" if name_filter else "GATHER_NEAREST"
+    def get_node_types(self, max_dist=60.0):
+        """Scan nearby nodes and return the unique (name, type) pairs found.
+
+        Useful for discovering what *name_filter* values work in this area
+        before calling gather_nearest() or scan_nodes().
+
+        Returns list of dicts: {"name": ..., "type": ..., "count": N,
+        "usable": N, "closest": dist}.
+        """
+        nodes = self.scan_nodes(name_filter="", usable_only=False)
+        buckets = {}
+        for n in nodes:
+            dist = n.get("dist", 999.0)
+            if isinstance(dist, str):
+                try:
+                    dist = float(dist)
+                except ValueError:
+                    dist = 999.0
+            if dist > max_dist:
+                continue
+            key = (n.get("name", "?"), n.get("type", "?"))
+            if key not in buckets:
+                buckets[key] = {"name": key[0], "type": key[1],
+                                "count": 0, "usable": 0, "closest": 999.0}
+            buckets[key]["count"] += 1
+            if not n.get("used"):
+                buckets[key]["usable"] += 1
+            if dist < buckets[key]["closest"]:
+                buckets[key]["closest"] = dist
+        result = sorted(buckets.values(), key=lambda b: b["closest"])
+        return result
+
+    def gather_node_native(self, name_filter=""):
+        """Send GATHER_NEAREST / GATHER_NODE to the C++ side and let
+        the engine handle target selection, movement, and interaction.
+
+        This is the *thin* wrapper — the C++ DoGatherNearest() picks the
+        closest matching node within 25u and does everything server-side.
+
+        Use this when you want the C++ to own the full gather pipeline.
+        For Python-side control (custom range, sorting, stop_event)
+        use gather_nearest() instead.
+
+        Wire format:
+          GATHER_NEAREST               — any node, 25u
+          GATHER_NEAREST_<filter>      — name-filtered, 25u
+          GATHER_NODE_<filter>         — alias for GATHER_NEAREST_<filter>
+
+        Returns the raw response string from C++, or None on failure.
+        """
+        if name_filter:
+            cmd = f"GATHER_NEAREST_{name_filter}"
+        else:
+            cmd = "GATHER_NEAREST"
         r = self._send(cmd)
-        if not r or r in ("NONE", "NO_PLAYER", "NO_INPUT", "IL2CPP_NOT_AVAILABLE"):
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
             return None
-        d = self._parse_kv(r.replace("OK_GATHER|", ""))
-        if "OK_GATHER" in r and "invoke" not in d:
-            d["invoke"] = 0
-        return d
+        return r
+
+    def gather_nearest(self, name_filter="", max_dist=25.0,
+                        arrive_radius=3.0, arrive_timeout=20.0,
+                        move_poll=0.25, stop_event=None):
+        """Move to and use the closest usable gather node (Python-side).
+
+        The *name_filter* is a substring matched against node names
+        (case-insensitive on the C++ side). Use get_node_types() to see
+        what's nearby.  Common values: "herb", "ore", "wood", "fish", ""
+        (empty = any node).
+
+        Target selection is done Python-side via scan_nodes_in_range so we
+        always pick the truly nearest un-used node.  The player walks there
+        with move_to(), waits until within *arrive_radius*, then calls
+        use_entity() to interact.
+
+        For a simpler path that lets C++ handle everything, see
+        gather_node_native().
+
+        Returns dict with name, type, dist, ptr, invoke (0 = OK) or None.
+        """
+        # #region agent log
+        import json, os
+        _DBG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug-1209af.log")
+        def _dl(h, loc, msg, **d):
+            try:
+                with open(_DBG, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"1209af","hypothesisId":h,"location":loc,"message":msg,"data":d,"timestamp":int(time.time()*1000),"runId":"post-fix"})+"\n")
+            except Exception: pass
+        # #endregion
+
+        nodes = self.scan_nodes_in_range(max_dist, name_filter=name_filter,
+                                          exclude_used=True)
+        if not nodes:
+            return None
+
+        target = nodes[0]
+        tname  = target.get("name", "?")
+        tdist  = target.get("_live_dist", 999.0)
+        tx, ty = target.get("x", 0.0), target.get("y", 0.0)
+
+        # #region agent log
+        _dl("H7", "gather_nearest:target", "Python-side target", name=tname, dist=round(tdist, 2), x=tx, y=ty)
+        # #endregion
+
+        if tdist > arrive_radius:
+            self.move_to(tx, ty)
+
+            deadline = time.time() + arrive_timeout
+            while time.time() < deadline:
+                if stop_event and stop_event.is_set():
+                    return None
+                dist_now = self.distance_to(tx, ty)
+                if dist_now <= arrive_radius:
+                    break
+                if not self.is_moving() and (time.time() + arrive_timeout - deadline) > 1.0:
+                    break
+                time.sleep(move_poll)
+
+        used = self.use_entity(tname)
+
+        # #region agent log
+        _dl("H7", "gather_nearest:use", "use_entity result", name=tname, used=used, final_dist=round(self.distance_to(tx, ty), 2))
+        # #endregion
+
+        result = dict(target)
+        result["invoke"] = 0 if used else 1
+        return result
 
     # ══════════════════════════════════════════════════════════════
     #  SPELLS
@@ -1509,6 +1878,25 @@ class EthyToolConnection:
         nl = name.lower()
         return any(nl in s.get("display", "").lower() or nl in s.get("name", "").lower()
                    for s in self.get_spells())
+
+    def spell_ready(self, name):
+        """SPELL_READY <name>: fast check if spell is off cooldown. Returns True/False."""
+        r = self._send(f"SPELL_READY {name}")
+        return r == "1" if r else False
+
+    def spell_cd(self, name):
+        """SPELL_CD <name>: current cooldown remaining for a spell."""
+        return self._float(self._send(f"SPELL_CD {name}"))
+
+    def spell_autocast_on(self, name):
+        """SPELL_AUTOCAST_ON <name>: enable autocast via proper SetAutocast method."""
+        r = self._send(f"SPELL_AUTOCAST_ON {name}")
+        return r is not None and r.startswith("OK")
+
+    def spell_autocast_off(self, name):
+        """SPELL_AUTOCAST_OFF <name>: disable autocast via proper SetAutocast method."""
+        r = self._send(f"SPELL_AUTOCAST_OFF {name}")
+        return r is not None and r.startswith("OK")
 
     def resolve_spell_name(self, profile_name):
         """Resolve profile/build spell name to game's exact display name for CAST_ command."""
@@ -1600,16 +1988,7 @@ class EthyToolConnection:
     # ══════════════════════════════════════════════════════════════
 
     def get_fury_stacks(self):
-        r = self._send("PLAYER_STACKS")
-        if not r or "stacks=" not in r:
-            return 0
-        for part in r.split("|"):
-            if part.startswith("stacks="):
-                try:
-                    return int(float(part.split("=", 1)[1]))
-                except (ValueError, IndexError):
-                    return 0
-        return 0
+        return self.get_player_stacks("FuryStatus")
 
     def get_player_buffs(self):
         """Get active buffs. Skips count header and debug dumps."""
@@ -1633,9 +2012,31 @@ class EthyToolConnection:
                 results.append(d)
         return results
 
-    def get_player_stacks(self):
-        """Get fury/rage stacks. Use get_fury_stacks() for the count value."""
-        return self.get_fury_stacks()
+    def get_player_stacks(self, stack_id=None):
+        """Get stacks for any discipline. Reads from PLAYER_STACKS <id> if given,
+        falls back to profile STACK_ID, then to BUFF_STACKS as a last resort."""
+        sid = stack_id
+        if not sid:
+            p = self.load_profile()
+            sid = getattr(p, "STACK_ID", None) if p else None
+        if not sid:
+            sid = "FuryStatus"
+        cmd = f"PLAYER_STACKS {sid}" if sid else "PLAYER_STACKS"
+        r = self._send(cmd)
+        if r and "stacks=" in r:
+            for part in r.split("|"):
+                if part.startswith("stacks="):
+                    try:
+                        return int(float(part.split("=", 1)[1]))
+                    except (ValueError, IndexError):
+                        pass
+        info = self.get_buff_stacks(sid)
+        if info:
+            try:
+                return int(float(info.get("stacks", 0)))
+            except (ValueError, TypeError):
+                pass
+        return 0
 
     def get_player_skills(self):
         """PLAYER_SKILLS: raw skill/XP data from game."""
@@ -1643,6 +2044,13 @@ class EthyToolConnection:
         if not r or r in ("NO_PLAYER", "NO_SKILL_LIST", "EMPTY", "NOT_INITIALIZED"):
             return []
         return [self._parse_kv(s) for s in r.split("###") if s.strip()]
+
+    def get_player_skill(self, name):
+        """PLAYER_SKILL <name>: get a single skill by name/category. Returns dict or {}."""
+        r = self._send(f"PLAYER_SKILL {name}")
+        if not r or r in ("NO_PLAYER", "NOT_FOUND", "NOT_INITIALIZED"):
+            return {}
+        return self._parse_kv(r)
 
     def get_discipline_level(self, discipline_name):
         """Get discipline level from PLAYER_SKILLS. Returns int or None if not found."""
@@ -1886,6 +2294,21 @@ class EthyToolConnection:
             if nl in i.get("name", "").lower(): return i
         return None
 
+    def use_item(self, uid):
+        """USE_ITEM <uid>: use a consumable/item by its UID. Returns True on success."""
+        r = self._send(f"USE_ITEM {uid}")
+        return r == "OK"
+
+    def equip_item(self, uid):
+        """EQUIP_ITEM <uid>: equip an item by its UID (toggle equip/unequip). Returns True on success."""
+        r = self._send(f"EQUIP_ITEM {uid}")
+        return r == "OK"
+
+    def unequip_slot(self, slot_id):
+        """UNEQUIP_SLOT <slot>: unequip item in the given ItemSlots int. Returns True on success."""
+        r = self._send(f"UNEQUIP_SLOT {slot_id}")
+        return r == "OK"
+
     # ══════════════════════════════════════════════════════════════
     #  GOLD & STATUS
     # ══════════════════════════════════════════════════════════════
@@ -1896,7 +2319,9 @@ class EthyToolConnection:
 
     def get_job(self):
         r = self._send("PLAYER_JOB")
-        return r if r and r != "NOT_INITIALIZED" else ""
+        if not r or r in ("NOT_INITIALIZED", "None", "none", "null"):
+            return ""
+        return r
 
     def wait_for_job_start(self, timeout=5.0, poll=0.25, stop_event=None):
         """Poll PLAYER_JOB until non-empty or timeout.
@@ -2126,6 +2551,31 @@ class EthyToolConnection:
         """MAP_INSPECT_<class>: dump fields/methods of a map class."""
         return self._send(f"MAP_INSPECT_{class_name}") or ""
 
+    def floor_debug(self):
+        """FLOOR_DEBUG: dump all floor/tile/level/collision state from the player.
+        Returns a dict of field_name→value pairs useful for diagnosing
+        'stuck on level' or 'can't drop down holes' issues."""
+        r = self._send("FLOOR_DEBUG")
+        if not r or r in ("NO_PLAYER", "NOT_INITIALIZED"):
+            return {}
+        return self._parse_kv(r)
+
+    def floor_search(self):
+        """FLOOR_SEARCH: scan IL2CPP assemblies for classes related to floors,
+        tiles, levels, elevation, holes, transitions, colliders, etc.
+        Returns a list of fully-qualified class names."""
+        r = self._send("FLOOR_SEARCH")
+        if not r or r == "NONE":
+            return []
+        if r.startswith("FOUND_") and "|" in r:
+            return r.split("|", 1)[1].split("|")
+        return []
+
+    def floor_inspect(self, class_name):
+        """FLOOR_INSPECT_<class>: dump fields and methods of a floor-related class.
+        Returns raw string: CLASS=Name|F:0xOFF:fname:type|...|M:method|..."""
+        return self._send(f"FLOOR_INSPECT_{class_name}") or ""
+
     def party_search(self):
         """PARTY_SEARCH: find Party/Group-related IL2CPP classes for structure discovery."""
         r = self._send("PARTY_SEARCH")
@@ -2146,6 +2596,552 @@ class EthyToolConnection:
     def scene_dump(self, max_depth=4):
         """SCENE_DUMP: dump scene hierarchy. Optional depth via SCENE_DUMP_<n>."""
         return self._send(f"SCENE_DUMP_{max_depth}" if max_depth != 4 else "SCENE_DUMP") or ""
+
+    def debug_loot_windows(self):
+        """DEBUG_LOOT_WINDOWS: class name of each open window + loot filter result."""
+        return self._send("DEBUG_LOOT_WINDOWS") or ""
+
+    def offset_dump(self):
+        """OFFSET_DUMP: dump all runtime field offsets for verification."""
+        return self._send("OFFSET_DUMP") or ""
+
+    # ══════════════════════════════════════════════════════════════
+    #  IL2CPP CLASS CACHE — pre-cache ALL classes for fast access
+    # ══════════════════════════════════════════════════════════════
+
+    def cache_all_classes(self):
+        """CACHE_ALL_CLASSES: pre-populate the C++ class pointer cache
+        from ALL loaded assemblies. After this, INVOKE_METHOD / READ_FIELD /
+        WRITE_FIELD can resolve ANY class by name instantly.
+        Returns the number of classes cached, or 0 on failure."""
+        r = self._send("CACHE_ALL_CLASSES")
+        if r and r.startswith("CACHED="):
+            try:
+                return int(r.split("=")[1])
+            except (ValueError, IndexError):
+                return 0
+        return 0
+
+    def class_cache_size(self):
+        """CLASS_CACHE_SIZE: returns number of classes in the cache."""
+        r = self._send("CLASS_CACHE_SIZE")
+        try:
+            return int(r)
+        except (ValueError, TypeError):
+            return 0
+
+    def list_cached_classes(self, page=0):
+        """LIST_CACHED_CLASSES: returns class names from cache (200/page).
+        Returns list of class name strings."""
+        r = self._send(f"LIST_CACHED_CLASSES {page}")
+        if not r or r == "END":
+            return []
+        if "###" in r:
+            _, body = r.split("###", 1)
+            return [c.strip() for c in body.split("|") if c.strip()]
+        return []
+
+    def list_all_cached_classes(self):
+        """Fetches ALL cached class names across all pages."""
+        all_classes = []
+        page = 0
+        while True:
+            batch = self.list_cached_classes(page)
+            if not batch:
+                break
+            all_classes.extend(batch)
+            page += 1
+        return all_classes
+
+    def resolve_class(self, class_name):
+        """RESOLVE_CLASS: test if a class can be resolved by name.
+        Returns hex pointer string on success, None on failure."""
+        r = self._send(f"RESOLVE_CLASS {class_name}")
+        if r and r.startswith("OK|ptr="):
+            return r[7:]
+        return None
+
+    def dump_null_classes(self):
+        """DUMP_NULL_CLASSES: reports which GameClasses pointers are nullptr.
+        Returns dict with 'null' (list) and 'valid' (dict of name→ptr)."""
+        r = self._send("DUMP_NULL_CLASSES")
+        if not r or r == "GAME_CLASSES_NOT_INIT":
+            return {"null": [], "valid": {}, "error": r or "empty"}
+        result = {"null": [], "valid": {}}
+        for line in r.split("\n"):
+            if line.startswith("NULL###"):
+                body = line[6:]
+                result["null"] = [n.strip() for n in body.split("|") if n.strip()]
+            elif line.startswith("VALID###"):
+                body = line[8:]
+                for entry in body.split("|"):
+                    if "=" in entry:
+                        name, ptr = entry.split("=", 1)
+                        result["valid"][name.strip()] = ptr.strip()
+            elif line.startswith("valid="):
+                pass
+        return result
+
+    # ══════════════════════════════════════════════════════════════
+    #  IL2CPP REFLECTION — assembly / class / method browsing
+    # ══════════════════════════════════════════════════════════════
+
+    def get_assemblies(self):
+        """DUMP_ASSEMBLIES: list all loaded IL2CPP assemblies.
+        Returns list of assembly name strings."""
+        r = self._send("DUMP_ASSEMBLIES")
+        if not r or r in ("REFLECTION_NOT_AVAILABLE", "NO_DOMAIN"):
+            return []
+        if "###" not in r:
+            return []
+        _, body = r.split("###", 1)
+        return [a.strip() for a in body.split("|") if a.strip()]
+
+    def get_image_class_count(self, assembly):
+        """DUMP_IMAGE_CLASS_COUNT: number of classes in an assembly."""
+        r = self._send(f"DUMP_IMAGE_CLASS_COUNT {assembly}")
+        return self._int(r)
+
+    def get_image_classes(self, assembly, paged=True):
+        """DUMP_IMAGE_CLASSES_PAGE: list all classes in an assembly.
+        Automatically pages through results."""
+        classes = []
+        if paged:
+            page = 0
+            while True:
+                r = self._send(f"DUMP_IMAGE_CLASSES_PAGE {assembly} {page}")
+                if not r or r == "END" or r.startswith("ERROR"):
+                    break
+                if "###" in r:
+                    hdr, body = r.split("###", 1)
+                    classes.extend([c.strip() for c in body.split("|")
+                                    if c.strip() and c != "TRUNCATED_USE_PAGED"])
+                    import re
+                    m_end = re.search(r"end=(\d+)", hdr)
+                    m_tot = re.search(r"total=(\d+)", hdr)
+                    if m_end and m_tot and int(m_end.group(1)) >= int(m_tot.group(1)):
+                        break
+                else:
+                    break
+                page += 1
+        else:
+            r = self._send(f"DUMP_IMAGE_CLASSES {assembly}")
+            if r and "###" in r:
+                _, body = r.split("###", 1)
+                classes = [c.strip() for c in body.split("|")
+                           if c.strip() and c != "TRUNCATED_USE_PAGED"]
+        return classes
+
+    def dump_class_full(self, class_name):
+        """DUMP_CLASS_FULL: full field + method dump for any IL2CPP class.
+        Returns dict with 'fields' and 'methods' raw strings."""
+        r = self._send(f"DUMP_CLASS_FULL {class_name}")
+        if not r or r == "NOT_FOUND":
+            return None
+        result = {"raw": r, "fields": "", "methods": ""}
+        if "FIELDS###" in r:
+            parts = r.split("\nMETHODS###", 1)
+            result["fields"] = parts[0].replace("FIELDS###", "", 1)
+            if len(parts) > 1:
+                result["methods"] = parts[1]
+        return result
+
+    def dump_all_hooks(self, page=None):
+        """DUMP_ALL_HOOKS: enumerate Game.dll classes with all fields + methods.
+        Returns raw multi-line string. Pass page=N for paged results."""
+        if page is not None:
+            return self._send(f"DUMP_ALL_HOOKS_PAGE {page}") or ""
+        return self._send("DUMP_ALL_HOOKS") or ""
+
+    def dump_all_hooks_full(self):
+        """Iterate all pages of DUMP_ALL_HOOKS until END.
+        Returns list of per-class dicts: {name, fields: [...], methods: [...]}."""
+        results = []
+        page = 0
+        while True:
+            r = self._send(f"DUMP_ALL_HOOKS_PAGE {page}")
+            if not r or r == "END" or r.startswith("ERROR") or r.startswith("NO_"):
+                break
+            current_class = None
+            for line in r.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("CLASS:"):
+                    current_class = {"name": line[6:], "fields": [], "methods": []}
+                    results.append(current_class)
+                elif line.startswith("F:") and current_class:
+                    parts = line[4:].split("|") if line.startswith("  F:") else line[2:].split("|")
+                    if len(parts) >= 3:
+                        current_class["fields"].append({
+                            "offset": parts[0], "name": parts[1], "type": parts[2]
+                        })
+                elif line.startswith("M:") and current_class:
+                    parts = line[4:].split("|") if line.startswith("  M:") else line[2:].split("|")
+                    if len(parts) >= 3:
+                        current_class["methods"].append({
+                            "name": parts[0], "params": parts[1], "ret": parts[2]
+                        })
+                elif "TRUNCATED_NEXT_PAGE" in line:
+                    pass
+            page += 1
+            if page > 500:
+                break
+        return results
+
+    # ══════════════════════════════════════════════════════════════
+    #  IL2CPP HOOKS — invoke methods / read+write fields at runtime
+    #  C++ runs these on the main thread; Python just sends the cmd.
+    # ══════════════════════════════════════════════════════════════
+
+    def invoke_method(self, class_name, method_name, param_count=0, *args):
+        """INVOKE_METHOD: call any IL2CPP method by class + name.
+        Main-thread safe — C++ queues it to Unity's Update loop.
+        Returns the parsed response string or None on failure."""
+        parts = [f"INVOKE_METHOD {class_name} {method_name} {param_count}"]
+        for a in args:
+            parts.append(str(a))
+        r = self._send(" ".join(parts))
+        if not r or r.startswith("ERROR") or r.endswith("NOT_FOUND") or r.endswith("NOT_AVAILABLE"):
+            return None
+        if r.startswith("OK|"):
+            payload = r[3:]
+            if payload == "null":
+                return None
+            if payload.startswith("str="):
+                return payload[4:]
+            if payload.startswith("ptr="):
+                return payload
+            return payload
+        return r
+
+    def read_field(self, class_name, field_name):
+        """READ_FIELD: read any IL2CPP field by class + field name.
+        Resolves the instance automatically (player entity, singleton, static).
+        Returns the value as a string, or None on failure."""
+        r = self._send(f"READ_FIELD {class_name} {field_name}")
+        if not r or r in ("CLASS_NOT_FOUND", "FIELD_NOT_FOUND", "NO_INSTANCE",
+                          "REFLECTION_NOT_AVAILABLE", "READ_ACCESS_VIOLATION"):
+            return None
+        return r
+
+    def read_field_float(self, class_name, field_name):
+        """READ_FIELD as float."""
+        return self._float(self.read_field(class_name, field_name))
+
+    def read_field_int(self, class_name, field_name):
+        """READ_FIELD as int."""
+        return self._int(self.read_field(class_name, field_name))
+
+    def read_field_bool(self, class_name, field_name):
+        """READ_FIELD as bool."""
+        v = self.read_field(class_name, field_name)
+        return v in ("true", "1", "True") if v else False
+
+    def write_field(self, class_name, field_name, value):
+        """WRITE_FIELD: write any IL2CPP field by class + field name.
+        Main-thread safe — C++ queues it to Unity's Update loop.
+        Returns True on success."""
+        r = self._send(f"WRITE_FIELD {class_name} {field_name} {value}")
+        return r == "OK"
+
+    # ══════════════════════════════════════════════════════════════
+    #  IL2CPP HOOK HELPERS — high-level wrappers for common patterns
+    #  Works with ANY class — C++ resolves singletons generically.
+    # ══════════════════════════════════════════════════════════════
+
+    def hook_search(self, pattern):
+        """Search all hookable methods across all classes by regex.
+        Uses the il2cpp_hooks.py HOOK_REGISTRY (must be generated first).
+        Returns list of {class, name, params, ret, categories}."""
+        try:
+            import re as _re
+            from il2cpp_hooks import HOOK_REGISTRY
+            results = []
+            rx = _re.compile(pattern, _re.IGNORECASE)
+            for cls, methods in HOOK_REGISTRY.items():
+                for m in methods:
+                    if rx.search(f"{cls}.{m['name']}"):
+                        results.append({"class": cls, **m})
+            return results
+        except ImportError:
+            return []
+
+    def hook_search_fields(self, pattern):
+        """Search all fields across all classes by regex.
+        Returns list of {class, offset, name, type}."""
+        try:
+            import re as _re
+            from il2cpp_hooks import FIELD_REGISTRY
+            results = []
+            rx = _re.compile(pattern, _re.IGNORECASE)
+            for cls, fields in FIELD_REGISTRY.items():
+                for f in fields:
+                    if rx.search(f"{cls}.{f['name']}"):
+                        results.append({"class": cls, **f})
+            return results
+        except ImportError:
+            return []
+
+    def hook_list_classes(self):
+        """List all classes with hookable methods."""
+        try:
+            from il2cpp_hooks import HOOK_REGISTRY
+            return sorted(HOOK_REGISTRY.keys())
+        except ImportError:
+            return []
+
+    def hook_get_methods(self, class_name):
+        """Get all hookable methods for a specific class."""
+        try:
+            from il2cpp_hooks import HOOK_REGISTRY
+            return HOOK_REGISTRY.get(class_name, [])
+        except ImportError:
+            return []
+
+    def hook_get_fields(self, class_name):
+        """Get all fields for a specific class."""
+        try:
+            from il2cpp_hooks import FIELD_REGISTRY
+            return FIELD_REGISTRY.get(class_name, [])
+        except ImportError:
+            return []
+
+    def hook_by_category(self, category):
+        """Get all hookable methods in a category.
+        Categories: combat, movement, entity, inventory, gathering,
+        ui, quest, social, skills, world, network, ai, misc"""
+        try:
+            from il2cpp_hooks import CATEGORY_INDEX
+            return CATEGORY_INDEX.get(category, [])
+        except ImportError:
+            return []
+
+    def hook_categories(self):
+        """List all available hook categories with method counts."""
+        try:
+            from il2cpp_hooks import CATEGORY_INDEX
+            return {cat: len(entries) for cat, entries in CATEGORY_INDEX.items()}
+        except ImportError:
+            return {}
+
+    def hook_summary(self):
+        """Print summary of all discovered hooks."""
+        try:
+            from il2cpp_hooks import HOOK_REGISTRY, FIELD_REGISTRY, CATEGORY_INDEX
+            total_hooks = sum(len(m) for m in HOOK_REGISTRY.values())
+            total_fields = sum(len(f) for f in FIELD_REGISTRY.values())
+            lines = [
+                f"IL2CPP Hook Registry",
+                f"  Classes with hooks : {len(HOOK_REGISTRY)}",
+                f"  Total hookable     : {total_hooks}",
+                f"  Classes with fields: {len(FIELD_REGISTRY)}",
+                f"  Total fields       : {total_fields}",
+                f"  Categories         : {len(CATEGORY_INDEX)}",
+            ]
+            for cat, entries in sorted(CATEGORY_INDEX.items()):
+                lines.append(f"    {cat:<20s}: {len(entries)} hooks")
+            return "\n".join(lines)
+        except ImportError:
+            return "Hook registry not generated. Run hook_diag.py first."
+
+    # ══════════════════════════════════════════════════════════════
+    #  DIRECT MEMORY ACCESS  (hardcoded offsets — no reflection)
+    #  Uses GET_PTR / READ_AT / WRITE_AT / BATCH_READ / CHAIN_READ
+    # ══════════════════════════════════════════════════════════════
+
+    def get_ptr(self, name):
+        """GET_PTR <name> — returns raw hex pointer string.
+        Names: player, camera, entitymgr, input, network, global, questmgr, ui
+        Also accepts any GameClasses name or raw hex."""
+        r = self._send(f"GET_PTR {name}")
+        if not r or r == "NULL" or r == "UNKNOWN_CMD":
+            return None
+        return r
+
+    def read_at(self, base, offset, dtype="f32"):
+        """READ_AT <base> <offset> <type> — read value at base+offset.
+        base: hex ptr string or name (player, camera, etc.)
+        offset: int (will be sent as hex)
+        dtype: f32, i32, u32, i16, i64, bool, byte, ptr, vec3, str"""
+        if isinstance(offset, int):
+            off_str = f"0x{offset:X}"
+        else:
+            off_str = str(offset)
+        r = self._send(f"READ_AT {base} {off_str} {dtype}")
+        if not r or r in ("BASE_NULL", "ACCESS_VIOLATION", "UNKNOWN_CMD"):
+            return None
+        if dtype in ("f32", "float"):
+            try:
+                return float(r)
+            except ValueError:
+                return None
+        if dtype in ("i32", "int", "u32", "uint", "i16", "short", "i64", "long", "byte", "u8"):
+            try:
+                return int(r)
+            except ValueError:
+                return None
+        if dtype == "bool":
+            return r == "true"
+        if dtype == "vec3":
+            try:
+                parts = r.split(",")
+                return (float(parts[0]), float(parts[1]), float(parts[2]))
+            except (ValueError, IndexError):
+                return None
+        return r
+
+    def write_at(self, base, offset, dtype, value):
+        """WRITE_AT <base> <offset> <type> <value>"""
+        if isinstance(offset, int):
+            off_str = f"0x{offset:X}"
+        else:
+            off_str = str(offset)
+        r = self._send(f"WRITE_AT {base} {off_str} {dtype} {value}")
+        return r == "OK"
+
+    def batch_read(self, base, specs):
+        """BATCH_READ <base> <off:type off:type ...>
+        specs: list of (offset, dtype) tuples or pre-built batch string.
+        Returns list of raw string values."""
+        if isinstance(specs, str):
+            batch_str = specs
+        else:
+            parts = []
+            for off, dt in specs:
+                if isinstance(off, int):
+                    parts.append(f"0x{off:X}:{dt}")
+                else:
+                    parts.append(f"{off}:{dt}")
+            batch_str = " ".join(parts)
+        r = self._send(f"BATCH_READ {base} {batch_str}")
+        if not r or r in ("BASE_NULL", "UNKNOWN_CMD"):
+            return None
+        return r.split("|")
+
+    def chain_read(self, base, offsets, final_type="ptr"):
+        """CHAIN_READ <base> <off1> <off2> ... <final_off:type>
+        Follows pointer chain. offsets is list of ints.
+        Last offset gets the type appended."""
+        parts = [base]
+        for i, off in enumerate(offsets):
+            if isinstance(off, int):
+                s = f"0x{off:X}"
+            else:
+                s = str(off)
+            if i == len(offsets) - 1:
+                s += f":{final_type}"
+            parts.append(s)
+        r = self._send(f"CHAIN_READ {' '.join(parts)}")
+        if not r or r.startswith("NULL") or r.startswith("CHAIN_AV") or r == "UNKNOWN_CMD":
+            return None
+        return r
+
+    def read_player_full(self):
+        """Read all key player fields in a single BATCH_READ call.
+        Returns dict with named fields or None."""
+        from game_offsets import LivingEntity as LE, Entity as E
+        r = self.batch_read("player", LE.BATCH_FULL)
+        if not r or len(r) < 13:
+            return None
+        try:
+            return {
+                "x": float(r[0]), "y": float(r[1]), "z": float(r[2]),
+                "max_hp": int(r[3]), "max_mana": int(r[4]),
+                "hp_pct": float(r[5]), "mana_pct": float(r[6]),
+                "in_combat": r[7] == "true", "is_moving": r[8] == "true",
+                "move_state": int(r[9]), "move_speed": float(r[10]),
+                "hostile_target": r[11] if r[11] != "NULL" else None,
+                "friendly_target": r[12] if r[12] != "NULL" else None,
+                "direction": int(r[13]),
+            }
+        except (ValueError, IndexError):
+            return None
+
+    def read_camera(self):
+        """Read camera state in one call."""
+        from game_offsets import CameraController as CC
+        r = self.batch_read("camera", CC.BATCH_VIEW)
+        if not r or len(r) < 6:
+            return None
+        try:
+            return {
+                "world_x": float(r[0]), "world_y": float(r[1]), "world_z": float(r[2]),
+                "distance": float(r[3]), "angle": float(r[4]), "pitch": float(r[5]),
+            }
+        except (ValueError, IndexError):
+            return None
+
+    def read_target_vitals(self, target_ptr):
+        """Read HP/mana of any entity pointer."""
+        from game_offsets import LivingEntity as LE
+        r = self.batch_read(target_ptr, LE.BATCH_VITALS)
+        if not r or len(r) < 5:
+            return None
+        try:
+            return {
+                "max_hp": int(r[0]), "max_mana": int(r[1]),
+                "hp_pct": float(r[2]), "mana_pct": float(r[3]),
+                "in_combat": r[4] == "true",
+            }
+        except (ValueError, IndexError):
+            return None
+
+    def read_entity_pos(self, entity_ptr):
+        """Read x,y,z of any entity pointer."""
+        r = self.batch_read(entity_ptr, "0x138:f32 0x13C:f32 0x140:f32")
+        if not r or len(r) < 3:
+            return None
+        try:
+            return (float(r[0]), float(r[1]), float(r[2]))
+        except ValueError:
+            return None
+
+    def read_entity_name(self, entity_ptr):
+        """Follow pointer chain to read entity name string."""
+        r = self.chain_read(entity_ptr, [0x090, 0x010], final_type="str")
+        return r
+
+    # ══════════════════════════════════════════════════════════════
+    #  SCENE SCAN — resource type scanning (herbs, trees, ores, skins)
+    # ══════════════════════════════════════════════════════════════
+
+    def scene_scan_entities(self, name_filter=""):
+        """SCENE_SCAN_ENTITIES: all scene entities with full metadata.
+        Optional name_filter narrows results."""
+        cmd = f"SCENE_SCAN_ENTITIES_{name_filter}" if name_filter else "SCENE_SCAN_ENTITIES"
+        r = self._send(cmd)
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_addr_entries(r)
+
+    def scene_scan_herbs(self):
+        """SCENE_SCAN_HERBS: only known herbalism plants in scene."""
+        r = self._send("SCENE_SCAN_HERBS")
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_addr_entries(r)
+
+    def scene_scan_trees(self):
+        """SCENE_SCAN_TREES: only known woodcutting trees in scene."""
+        r = self._send("SCENE_SCAN_TREES")
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_addr_entries(r)
+
+    def scene_scan_ores(self):
+        """SCENE_SCAN_ORES: only known mining veins/ores in scene."""
+        r = self._send("SCENE_SCAN_ORES")
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_addr_entries(r)
+
+    def scene_scan_skins(self):
+        """SCENE_SCAN_SKINS: only known skinnable creatures in scene."""
+        r = self._send("SCENE_SCAN_SKINS")
+        if not r or r in ("NONE", "NO_PLAYER", "IL2CPP_NOT_AVAILABLE"):
+            return []
+        return self._parse_addr_entries(r)
 
     # ══════════════════════════════════════════════════════════════
     #  PROFILE LOADER
@@ -2186,6 +3182,11 @@ class EthyToolConnection:
         return None
 
     def get_spell_info(self, name):
+        """Get spell info. Tries live SPELL_INFO command first, falls back to profile."""
+        resolved = self.resolve_spell_name(name)
+        r = self._send(f"SPELL_INFO {resolved}")
+        if r and r not in ("NO_NAME", "NO_PLAYER", "SPELL_NOT_FOUND", "UNKNOWN_CMD", ""):
+            return self._parse_kv(r)
         p = self.load_profile()
         if not p: return {}
         return getattr(p, "SPELL_INFO", {}).get(name, {})
@@ -2431,7 +3432,7 @@ class EthyToolConnection:
                 return True
 
         if getattr(p, "STACK_ENABLED", False):
-            stacks = self.get_fury_stacks()
+            stacks = self.get_player_stacks(getattr(p, "STACK_ID", None))
 
             prio_spell = self.get_priority_spell(stacks, hp_pct)
             if prio_spell:
@@ -2472,7 +3473,6 @@ class EthyToolConnection:
           PET_ROTATION           — pet abilities
         Falls back to do_rotation() for profiles without SPIRIT_LINK_ROTATION.
         """
-        import os as _os, json as _json, time as _time_mod, tempfile as _tmp
         p = self.load_profile()
         if not p:
             return False
@@ -2491,15 +3491,6 @@ class EthyToolConnection:
 
         def _ok(name):
             return name not in IGNORED_SPELLS and name not in prof_ignored
-
-        # #region agent log
-        try:
-            _lp = _os.path.join(_tmp.gettempdir(), "debug-5ce2bb.log")
-            with open(_lp, "a") as _f:
-                _f.write(_json.dumps({"sessionId": "5ce2bb", "location": "ethytool_lib.py:do_rotation_pro", "message": "rotation_tick", "data": {"sl_stacks": sl_stacks, "last_cast": last_cast}, "timestamp": int(_time_mod.time() * 1000)}) + "\n")
-        except Exception:
-            pass
-        # #endregion
 
         # Always complete the Spiritburst → Spiritlife combo before anything else
         if last_cast in follow_ups:
@@ -3679,3 +4670,151 @@ class ScreenReader:
                 return True
             time.sleep(poll)
         return False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  GameState — high-level, offset-based game state reader
+#  Usage:
+#      gs = GameState(conn)
+#      pos = gs.player_pos()            # (x, y, z)
+#      hp  = gs.player_hp_pct()         # 0.0 – 1.0
+#      gs.snapshot()                     # read everything in 1 call
+#      print(gs.snap["hp_pct"])          # cached from last snapshot
+# ══════════════════════════════════════════════════════════════════════════
+
+class GameState:
+    """Zero-reflection game state reader using hardcoded offsets."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.snap = {}
+        self._player_ptr = None
+        self._camera_ptr = None
+
+    def _ensure_ptrs(self):
+        if not self._player_ptr:
+            self._player_ptr = self.conn.get_ptr("player")
+        if not self._camera_ptr:
+            self._camera_ptr = self.conn.get_ptr("camera")
+
+    def refresh_ptrs(self):
+        self._player_ptr = self.conn.get_ptr("player")
+        self._camera_ptr = self.conn.get_ptr("camera")
+
+    def player_pos(self):
+        return self.conn.read_at("player", 0x138, "vec3")
+
+    def player_hp_pct(self):
+        return self.conn.read_at("player", 0x21C, "f32")
+
+    def player_mana_pct(self):
+        return self.conn.read_at("player", 0x220, "f32")
+
+    def player_max_hp(self):
+        return self.conn.read_at("player", 0x214, "i32")
+
+    def player_max_mana(self):
+        return self.conn.read_at("player", 0x218, "i32")
+
+    def player_in_combat(self):
+        return self.conn.read_at("player", 0x344, "bool")
+
+    def player_is_moving(self):
+        return self.conn.read_at("player", 0x280, "bool")
+
+    def player_move_speed(self):
+        return self.conn.read_at("player", 0x2B0, "f32")
+
+    def player_direction(self):
+        return self.conn.read_at("player", 0x134, "i32")
+
+    def player_hostile_target(self):
+        return self.conn.read_at("player", 0x228, "ptr")
+
+    def player_friendly_target(self):
+        return self.conn.read_at("player", 0x230, "ptr")
+
+    def player_job(self):
+        return self.conn.read_at("player", 0x4D8, "str")
+
+    def player_currency(self):
+        return self.conn.read_at("player", 0x5CC, "i32")
+
+    def player_food(self):
+        return self.conn.read_at("player", 0x664, "f32")
+
+    def player_infamy(self):
+        return self.conn.read_at("player", 0x678, "f32")
+
+    def player_frozen(self):
+        return self.conn.read_at("player", 0x470, "bool")
+
+    def player_pvp_zone(self):
+        return self.conn.read_at("player", 0x684, "bool")
+
+    def player_attack_speed(self):
+        return self.conn.read_at("player", 0x324, "f32")
+
+    def player_stance(self):
+        return self.conn.read_at("player", 0x340, "i32")
+
+    def camera_pos(self):
+        return self.conn.read_at("camera", 0x058, "vec3")
+
+    def camera_distance(self):
+        return self.conn.read_at("camera", 0x08C, "f32")
+
+    def camera_angle(self):
+        return self.conn.read_at("camera", 0x0C4, "f32")
+
+    def camera_pitch(self):
+        return self.conn.read_at("camera", 0x108, "f32")
+
+    def target_hp_pct(self, target_ptr=None):
+        if target_ptr is None:
+            target_ptr = self.player_hostile_target()
+        if not target_ptr:
+            return None
+        return self.conn.read_at(target_ptr, 0x21C, "f32")
+
+    def target_pos(self, target_ptr=None):
+        if target_ptr is None:
+            target_ptr = self.player_hostile_target()
+        if not target_ptr:
+            return None
+        return self.conn.read_at(target_ptr, 0x138, "vec3")
+
+    def target_in_combat(self, target_ptr=None):
+        if target_ptr is None:
+            target_ptr = self.player_hostile_target()
+        if not target_ptr:
+            return None
+        return self.conn.read_at(target_ptr, 0x344, "bool")
+
+    def distance_to(self, target_ptr):
+        p = self.player_pos()
+        t = self.conn.read_at(target_ptr, 0x138, "vec3")
+        if not p or not t:
+            return None
+        dx, dy, dz = t[0] - p[0], t[1] - p[1], t[2] - p[2]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def snapshot(self):
+        """Read all key player + camera fields in 2 batch calls.
+        Results stored in self.snap dict."""
+        p = self.conn.read_player_full()
+        if p:
+            self.snap.update(p)
+        c = self.conn.read_camera()
+        if c:
+            self.snap.update(c)
+        return self.snap
+
+    def network_logged_in(self):
+        return self.conn.read_at("network", 0x038, "bool")
+
+    def network_recv_bytes(self):
+        return self.conn.read_at("network", 0x050, "i32")
+
+    def network_sent_bytes(self):
+        return self.conn.read_at("network", 0x054, "i32")
