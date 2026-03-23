@@ -119,7 +119,6 @@ flowchart TD
 
 ## New Project Location
 
-`C:\Users\mrjam\OneDrive\Desktop\EthyrialInjector\EthyrialHub\`
 
 ## File Structure
 
