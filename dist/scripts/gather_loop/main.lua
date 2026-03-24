@@ -8,16 +8,10 @@
 ]]
 
 local ethy = require("common/ethy_sdk")
-
-local HAS_IMGUI = (core.imgui ~= nil and core.imgui.begin_window ~= nil)
-local ui = core.imgui or {}
+local ui = core.imgui
 
 ethy.print("=== Gather Loop loaded ===")
-if HAS_IMGUI then
-    ethy.print("  ImGui window mode — own floating window")
-else
-    ethy.print("  Fallback mode — using Script Menu tab (rebuild DLL for floating window)")
-end
+ethy.print("  ImGui window mode — own floating window")
 
 -- ═══════════════════════════════════════════════════════════════
 -- Node database — each gets a checkbox in the window
@@ -295,7 +289,7 @@ local function gather_tick()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- Render: ImGui floating window (if available)
+-- Render: ImGui floating window
 -- ═══════════════════════════════════════════════════════════════
 
 local function render_imgui_window()
@@ -358,41 +352,16 @@ local function render_imgui_window()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- Fallback: render in Script Menu tab (no DLL rebuild needed)
--- ═══════════════════════════════════════════════════════════════
-
-local function render_menu_fallback()
-    CFG.running = ethy.menu.checkbox("gl_run", CFG.running and "■ STOP GATHERING" or "▶ START GATHERING", CFG.running)
-
-    CFG.max_range   = ethy.menu.slider_int("gl_range", "Range (m)",       CFG.max_range,   5, 80)
-    CFG.gather_wait = ethy.menu.slider_int("gl_wait",  "Gather Wait (s)", CFG.gather_wait, 5, 25)
-    CFG.rest_hp     = ethy.menu.slider_int("gl_hp",    "Rest HP %",       CFG.rest_hp,    10, 90)
-
-    for _, n in ipairs(NODES) do
-        n.on = ethy.menu.checkbox("gl_" .. n.name:gsub(" ", "_"), n.name, n.on)
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- Callbacks — pick the right render path
+-- Callbacks
 -- ═══════════════════════════════════════════════════════════════
 
 ethy.on_update(function()
-    if not HAS_IMGUI then
-        render_menu_fallback()
-    end
     gather_tick()
 end)
 
-if HAS_IMGUI then
-    ethy.on_render(function()
-        render_imgui_window()
-    end)
-end
+ethy.on_render(function()
+    render_imgui_window()
+end)
 
 ethy.print("Gather Loop ready.")
-if HAS_IMGUI then
-    ethy.print("  Window should be visible on screen.")
-else
-    ethy.print("  Open Settings > Script Menu tab to configure and start.")
-end
+ethy.print("  Window should be visible on screen.")
