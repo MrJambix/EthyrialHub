@@ -1,0 +1,35 @@
+# Build artifacts (not the distributed exe)
+x64/
+x86/
+Debug/
+Release/
+*.recipe
+*.tlog
+*.obj
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# IDE
+.vs/
+*.user
+*.suo
+*.ncb
+*.opendb
+*.opensdf
+
+# Python cache
+__pycache__/
+*.pyc
+
+# ImGui layout (generated at runtime)
+ethyrialhub_imgui.ini
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs / debug
+*.log

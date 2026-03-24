@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "created": "2026-03-20T19:48:09",
+    "total_kills": 13,
+    "session_count": 3,
+    "last_updated": "2026-03-20T20:22:10"
+  },
+  "mobs": {
+    "Bandit Outlaw": {
+      "kills": 2,
+      "loot_events": 2,
+      "empty_loot_events": 2,
+      "last_seen": "2026-03-20T19:48:55",
+      "locations": {
+        "60,30,0": 1,
+        "30,40,0": 1
+      },
+      "drops": {}
+    },
+    "Bandit Guardian": {
+      "kills": 1,
+      "loot_events": 1,
+      "empty_loot_events": 1,
+      "last_seen": "2026-03-20T19:48:38",
+      "locations": {
+        "40,40,0": 1
+      },
+      "drops": {}
+    },
+    "Elmina De Orosaka": {
+      "kills": 1,
+      "loot_events": 1,
+      "empty_loot_events": 1,
+      "last_seen": "2026-03-20T19:48:50",
+      "locations": {
+        "30,40,0": 1
+      },
+      "drops": {}
+    },
+    "Stalking Rat": {
+      "kills": 8,
+      "loot_events": 1,
+      "empty_loot_events": 0,
+      "last_seen": "2026-03-20T20:20:15",
+      "locations": {
+        "60,40,0": 1,
+        "50,40,0": 1,
+        "50,30,0": 1,
+        "50,20,0": 1,
+        "40,50,0": 2,
+        "40,60,0": 1,
+        "30,60,0": 1
+      },
+      "drops": {
+        "Gold": {
+          "times_dropped": 1,
+          "drop_rate_pct": 25.0,
+          "total_quantity": 300,
+          "avg_quantity": 300.0,
+          "min_quantity": 300,
+          "max_quantity": 300,
+          "rarity": "",
+          "quality": ""
+        }
+      }
+    },
+    "Giant Rat": {
+      "kills": 1,
+      "loot_events": 1,
+      "empty_loot_events": 1,
+      "last_seen": "2026-03-20T20:17:28",
+      "locations": {
+        "50,20,0": 1
+      },
+      "drops": {}
+    }
+  }
+}
