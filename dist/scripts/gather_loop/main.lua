@@ -157,7 +157,7 @@ end
 
 local function is_safe()
     local hp = core.player.hp()
-    if hp <= 0 then return false, "Dead" end
+    if not hp or hp <= 0 then return false, string.format("Dead (hp=%s)", tostring(hp)) end
     if core.player.combat() then return false, "In combat" end
     if core.player.frozen() then return false, "Frozen" end
     if hp < CFG.rest_hp then return false, string.format("Low HP (%.0f%%)", hp) end
@@ -336,6 +336,17 @@ local function render_imgui_window()
         CFG.max_range   = ui.slider_int("Range (m)",       CFG.max_range,   5, 80)
         CFG.gather_wait = ui.slider_int("Gather Wait (s)", CFG.gather_wait, 5, 25)
         CFG.rest_hp     = ui.slider_int("Rest HP %",       CFG.rest_hp,    10, 90)
+
+        if ui.button("Scan Nodes (debug)") then
+            local raw = core.send_command("NODE_SCAN") or "NONE"
+            local all = parse_lines(raw)
+            log("=== NODE SCAN: %d nodes ===", #all)
+            for _, n in ipairs(all) do
+                log("  [%s] uid=%s dist=%.0f usable=%s",
+                    tostring(n.name), tostring(n.uid),
+                    n.dist or 0, tostring(n.usable))
+            end
+        end
         ui.separator()
 
         local last_cat = ""
