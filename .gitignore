@@ -33,3 +33,9 @@ desktop.ini
 
 # Logs / debug
 *.log
+
+# Runtime data dumps
+dist/scripts/*_dump.txt
+dist/scripts/*_log.txt
+dist/scripts/game_data_dump.txt
+dist/scripts/live_capture_log.txt
