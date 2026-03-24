@@ -39,6 +39,7 @@ local NODES = {
     { name = "Aging Birch",     on = false, cat = "Tree" },
     { name = "Oak Tree",        on = false, cat = "Tree" },
     { name = "Acacia Tree",     on = false, cat = "Tree" },
+    { name = "Ancient Acacia",  on = false, cat = "Tree" },
 
     { name = "Hemp Bush",       on = false, cat = "Herb" },
     { name = "Redban Flower",   on = false, cat = "Herb" },
