@@ -1,6 +1,6 @@
 # EthyrialHub
 
-Automation toolkit for **Ethyrial: Echoes of Yore**. Native C++ hub with embedded Lua 5.4, ImGui overlay, and a full game-injection toolkit. Includes gather bots, combat rotations, speed hacks, and a scriptable plugin system.
+Automation toolkit for **Ethyrial: Echoes of Yore**. Native C++ hub with embedded Lua 5.4, ImGui overlay, and a full game-injection toolkit. Includes combat rotations and a scriptable plugin system.
 
 ## Quick Start
 
