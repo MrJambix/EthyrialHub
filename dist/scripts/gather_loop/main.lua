@@ -37,9 +37,19 @@ local NODES = {
     { name = "Pine Tree",       on = false, cat = "Tree" },
     { name = "Birch Tree",      on = false, cat = "Tree" },
     { name = "Aging Birch",     on = false, cat = "Tree" },
+    { name = "Fir Tree",        on = false, cat = "Tree" },
     { name = "Oak Tree",        on = false, cat = "Tree" },
     { name = "Acacia Tree",     on = false, cat = "Tree" },
-    { name = "Ancient Acacia",  on = false, cat = "Tree" },
+    { name = "Wispwood Tree",   on = false, cat = "Tree" },
+    { name = "Spiritwood Tree", on = false, cat = "Tree" },
+    { name = "Staroak Tree",    on = false, cat = "Tree" },
+    { name = "Moonwillow Tree", on = false, cat = "Tree" },
+    { name = "Aetherbark Tree", on = false, cat = "Tree" },
+    { name = "Mana Ash Tree",   on = false, cat = "Tree" },
+    { name = "Elystram Tree",   on = false, cat = "Tree" },
+    { name = "Shadewood Tree",  on = false, cat = "Tree" },
+    { name = "Duskroot Tree",   on = false, cat = "Tree" },
+    { name = "Primordial Tree", on = false, cat = "Tree" },
 
     { name = "Hemp Bush",       on = false, cat = "Herb" },
     { name = "Redban Flower",   on = false, cat = "Herb" },
@@ -83,6 +93,7 @@ local show_window  = true
 
 local stats = { gathered = 0, skipped = 0, attempts = 0 }
 local skip_list = {}
+local debug_cache = nil
 
 -- ═══════════════════════════════════════════════════════════════
 -- Helpers
@@ -337,15 +348,91 @@ local function render_imgui_window()
         CFG.gather_wait = ui.slider_int("Gather Wait (s)", CFG.gather_wait, 5, 25)
         CFG.rest_hp     = ui.slider_int("Rest HP %",       CFG.rest_hp,    10, 90)
 
-        if ui.button("Scan Nodes (debug)") then
+        if ui.button("Scan Nodes") then
             local raw = core.send_command("NODE_SCAN") or "NONE"
             local all = parse_lines(raw)
             log("=== NODE SCAN: %d nodes ===", #all)
             for _, n in ipairs(all) do
-                log("  [%s] uid=%s dist=%.0f usable=%s",
-                    tostring(n.name), tostring(n.uid),
-                    n.dist or 0, tostring(n.usable))
+                log("  [%s] class=%s dist=%.1f usable=%s ptr=%s",
+                    tostring(n.name or "?"), tostring(n.class or "?"),
+                    n.dist or 0, tostring(n.usable), tostring(n.ptr or "?"))
             end
+        end
+        ui.same_line()
+        if ui.button("Dump Raw") then
+            local raw = core.send_command("NODE_SCAN") or "NONE"
+            log("=== RAW NODE_SCAN (len=%d) ===", #raw)
+            local chunk_size = 200
+            for i = 1, #raw, chunk_size do
+                log("  [%d] %s", i, raw:sub(i, i + chunk_size - 1))
+            end
+        end
+        ui.same_line()
+        if ui.button("Discover Names") then
+            local raw = core.send_command("NODE_SCAN") or "NONE"
+            local all = parse_lines(raw)
+            local known_lower = {}
+            for _, n in ipairs(NODES) do
+                known_lower[n.name:lower()] = true
+            end
+            log("=== DISCOVER: %d nodes nearby ===", #all)
+            local seen = {}
+            for _, n in ipairs(all) do
+                local nm = n.name or "?"
+                local disp = n.disp or nm
+                local key = nm:lower()
+                if not seen[key] then
+                    seen[key] = true
+                    local matched = false
+                    for _, entry in ipairs(NODES) do
+                        if name_matches(nm, entry.name) then
+                            matched = true
+                            break
+                        end
+                    end
+                    local tag = matched and "[OK]" or "[NEW]"
+                    log("  %s  name=\"%s\"  disp=\"%s\"  dist=%.0f  usable=%s  class=%s",
+                        tag, nm, disp, n.dist or 0, tostring(n.usable), tostring(n.class or n.cls or "?"))
+                end
+            end
+            log("=== Walk near trees/ores/herbs and press again to discover more ===")
+        end
+        ui.separator()
+
+        -- Debug panel (cached, only updates on button click to avoid pipe spam)
+        ui.text_colored(0.5, 0.8, 1.0, "── Debug ──")
+        ui.text(string.format("  State: %s  Enabled: %d", STATE, #get_enabled_names()))
+        if debug_cache then
+            ui.text(string.format("  HP: %s  MP: %s  MaxHP: %s", debug_cache.hp, debug_cache.mp, debug_cache.maxhp))
+            ui.text(string.format("  Combat: %s  Frozen: %s", debug_cache.combat, debug_cache.frozen))
+            ui.text(string.format("  Pos: %s", debug_cache.pos))
+            ui.text(string.format("  PLAYER_ALL: %s", (debug_cache.all or ""):sub(1, 120)))
+        end
+
+        if ui.button("Debug Dump") then
+            log("=== DEBUG DUMP ===")
+            local cmds = {
+                {"PLAYER_HP",     "hp"},
+                {"PLAYER_MP",     "mp"},
+                {"PLAYER_MAX_HP", "maxhp"},
+                {"PLAYER_COMBAT", "combat"},
+                {"PLAYER_FROZEN", "frozen"},
+                {"PLAYER_POS",    "pos"},
+                {"PLAYER_ALL",    "all"},
+            }
+            debug_cache = {}
+            for _, c in ipairs(cmds) do
+                local r = core.send_command(c[1]) or "nil"
+                debug_cache[c[2]] = r
+                log("  %s = \"%s\"", c[1], r:sub(1, 200))
+            end
+            log("  core.player.hp()      = %s", tostring(core.player.hp()))
+            log("  core.player.combat()  = %s", tostring(core.player.combat()))
+            log("  core.player.frozen()  = %s", tostring(core.player.frozen()))
+            local safe, reason = is_safe()
+            log("  is_safe() = %s  reason = %s", tostring(safe), tostring(reason))
+            log("  STATE = %s  running = %s", STATE, tostring(CFG.running))
+            log("  Enabled nodes: %d", #get_enabled_names())
         end
         ui.separator()
 

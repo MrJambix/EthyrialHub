@@ -2,20 +2,22 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║               RANGER — Full Spell Rotation                   ║
 ║                                                              ║
-║  Uses EVERY ranger spell aggressively. No Rest/Leyline.      ║
-║  Spirit Link stacks gate some spells but the rotation        ║
-║  always has something to cast — never just Spirit Shot.      ║
+║  Priority (Combat):                                          ║
+║    1. Emergency heal  (LinkedRejuvenation @ <30% HP)         ║
+║    2. Follow-up combo (Spiritlife after Spiritburst)         ║
+║    3. Moderate heal   (LinkedRejuvenation @ <55% HP, 2+ stk)║
+║    4. Mana gate       (stop DPS if <15% mana)                ║
+║    5. Buff upkeep     (NaturesSwiftness, NatureArrows)       ║
+║    6. Pet             (PetAttack + SpiritbeastWrath on CD)   ║
+║    7. Spiritburst     (4+ Spirit Link stacks, big hit)       ║
+║    8. Verdant Barrage (on CD)                                ║
+║    9. Spiritroot DoT  (apply / refresh)                      ║
+║   10. Spiritlife      (1+ stacks, spend excess)              ║
+║   11. Spirit Shot     (filler, generates stacks)             ║
 ║                                                              ║
-║  Priority:                                                   ║
-║    1. Emergency heal (Linked Rejuvenation)                   ║
-║    2. Buff upkeep (Nature's Swiftness, Nature Arrows)        ║
-║    3. Follow-up after Spiritburst → Spiritlife               ║
-║    4. Spiritbeast's Wrath (pet, use on CD)                   ║
-║    5. Spiritburst Arrow (4+ stacks, big hit)                 ║
-║    6. Verdant Barrage (on CD)                                ║
-║    7. Spiritroot Arrow (DoT, keep applied)                   ║
-║    8. Spiritlife Arrow (stack spender)                       ║
-║    9. Spirit Shot (filler, generates stacks)                 ║
+║  Out of Combat:                                              ║
+║    - Maintain buffs (NaturesSwiftness, NatureArrows)         ║
+║    - Rest / Meditation when low HP or mana                   ║
 ╚══════════════════════════════════════════════════════════════╝
 ]]
 
@@ -25,17 +27,22 @@ local ethy = require("common/ethy_sdk")
 --  CONFIG
 -- ═══════════════════════════════════════════════════════════════
 
-local HEAL_HP       = 60
-local EMERGENCY_HP  = 35
-local TICK_RATE     = 0.3
-
-local SPIRIT_LINK_BUFF = "SpiritLink"
+local CONFIG = {
+    TICK_RATE       = 0.25,
+    EMERGENCY_HP    = 30,
+    HEAL_HP         = 55,
+    MANA_CONSERVE   = 15,
+    REST_HP         = 80,
+    REST_MP         = 50,
+    DOT_DURATION    = 6.0,
+    BURST_STACKS    = 4,
+}
 
 -- ═══════════════════════════════════════════════════════════════
---  SPELL NAMES (edit these if your spell names differ)
+--  SPELL NAMES
 -- ═══════════════════════════════════════════════════════════════
 
-local SPELLS = {
+local S = {
     SPIRIT_SHOT       = "SpiritShot",
     SPIRITBEAST_WRATH = "SpiritbeastWrath",
     NATURES_SWIFTNESS = "NaturesSwiftness",
@@ -46,38 +53,53 @@ local SPELLS = {
     SPIRITROOT        = "SpiritrootArrow",
     LINKED_REJUV      = "LinkedRejuvenation",
     PET_ATTACK        = "PetAttack",
+    REST              = "Rest",
+    MEDITATION        = "LeylineMeditation",
+}
+
+local BUFF = {
+    NATURE_ARROWS     = "Nature_Arrows",
+    NATURES_SWIFTNESS = "NaturesSwiftness",
+    SPIRIT_LINK       = "SpiritLink",
 }
 
 -- ═══════════════════════════════════════════════════════════════
 --  STATE
 -- ═══════════════════════════════════════════════════════════════
 
-local pending_follow_up = nil
-local last_cast_time    = 0
-local last_cast_name    = ""
-local dot_applied_at    = 0
-local DOT_DURATION      = 6.0
+local BUFF_COOLDOWN = 3600
+
+local state = {
+    last_cast_time = 0,
+    last_cast_name = "",
+    dot_applied_at = 0,
+    follow_up      = nil,
+    nature_arrows_cast_at   = 0,
+    natures_swift_cast_at   = 0,
+}
 
 -- #region agent log
-local _DBG_LOG = [[C:\Users\mrjam\OneDrive\Desktop\EthyrialInjector\EthyTool\debug-3fd161.log]]
-local _dbg_tick = 0
-local function _dbg(hid, msg, data)
+local _LOGPATH = [[C:\Users\mrjam\OneDrive\Desktop\EthyrialInjector\debug-11adf5.log]]
+local function _dbglog(hyp, msg, data)
     local parts = {}
     if data then
         for k, v in pairs(data) do
-            local val = type(v) == "string" and ('"' .. v .. '"') or tostring(v)
-            parts[#parts + 1] = string.format('"%s":%s', k, val)
+            parts[#parts+1] = string.format('%s=%s', tostring(k), tostring(v))
         end
     end
-    local json_data = "{" .. table.concat(parts, ",") .. "}"
+    local summary = string.format("[DBG:%s] %s {%s}", hyp, msg, table.concat(parts, ", "))
+    ethy.print(summary)
+    local jparts = {}
+    if data then
+        for k, v in pairs(data) do
+            jparts[#jparts+1] = string.format('"%s":%s', tostring(k),
+                type(v) == "string" and ('"'..v:gsub('"','\\"')..'"') or tostring(v))
+        end
+    end
     local line = string.format(
-        '{"sessionId":"3fd161","hypothesisId":"%s","location":"ranger.lua","message":"%s","data":%s,"timestamp":%d}\n',
-        hid, msg, json_data, (os.time or function() return 0 end)() * 1000)
-    pcall(function()
-        local f = io.open(_DBG_LOG, "a")
-        if f then f:write(line); f:close() end
-    end)
-    ethy.printf("[DBG:%s] %s %s", hid, msg, json_data)
+        '{"sessionId":"11adf5","hypothesisId":"%s","location":"ranger.lua","message":"%s","data":{%s},"timestamp":%d}\n',
+        hyp, msg, table.concat(jparts,","), (os.time or function() return 0 end)() * 1000)
+    pcall(function() local f = io.open(_LOGPATH,"a"); if f then f:write(line); f:close() end end)
 end
 -- #endregion
 
@@ -87,168 +109,233 @@ end
 
 local function cast(spell)
     if not spell or spell == "" then return false end
-    local ready = core.spells.is_ready(spell)
-    if not ready then return false end
+    if not core.spells.is_ready(spell) then return false end
+
     local result = core.spells.cast(spell)
     if result and (result:find("OK") or result == "") then
-        last_cast_time = ethy.now()
-        last_cast_name = spell
+        state.last_cast_time = ethy.now()
+        state.last_cast_name = spell
         ethy.printf("[Ranger] %s", spell)
         return true
     end
     return false
 end
 
+local _prev_stacks = -1
+local _stk_dbg_tick = 0
+
 local function get_stacks()
-    local s = ethy.buff_manager.get_stacks(SPIRIT_LINK_BUFF)
-    if s and s > 0 then return s end
-    local s2 = ethy.buff_manager.get_stacks("Spirit Link")
-    if s2 and s2 > 0 then return s2 end
-    local s3 = ethy.buff_manager.get_stacks("SpiritLink_Stacks")
-    if s3 and s3 > 0 then return s3 end
-    return s or 0
-end
+    local s1 = core.buff_manager.get_spirit_link_stacks()
+    local s2 = core.buff_manager.get_stacks("SpiritLink")
+    local s3 = core.buff_manager.get_stacks("Spirit Link")
+    local s4 = core.buff_manager.get_stacks("SpiritLink_Stacks")
 
-local _buffs_raw = ""
+    local best = 0
+    if s1 and s1 > best then best = s1 end
+    if s2 and s2 > best then best = s2 end
+    if s3 and s3 > best then best = s3 end
+    if s4 and s4 > best then best = s4 end
 
-local function refresh_buffs()
-    _buffs_raw = core.player.buffs() or ""
-end
-
-local _buffs_raw_logged = false
-
-local function has_buff(name)
-    if not _buffs_raw or _buffs_raw == "" or _buffs_raw == "NONE" then
-        return false
-    end
     -- #region agent log
-    if not _buffs_raw_logged and #_buffs_raw > 100 then
-        _buffs_raw_logged = true
-        local snippet = _buffs_raw:sub(1, 400):gsub('"', "'")
-        _dbg("RAW", "PLAYER_BUFFS pipe dump", {raw=snippet, raw_len=tostring(#_buffs_raw)})
+    _stk_dbg_tick = _stk_dbg_tick + 1
+    if _stk_dbg_tick <= 3 or best ~= _prev_stacks then
+        _dbglog("F", "spirit_link_stacks", {
+            api_shortcut = tostring(s1), type_s1 = type(s1),
+            SpiritLink = tostring(s2), type_s2 = type(s2),
+            Spirit_Link_space = tostring(s3), type_s3 = type(s3),
+            SpiritLink_Stacks = tostring(s4), type_s4 = type(s4),
+            best = tostring(best),
+        })
     end
     -- #endregion
-    local found = (_buffs_raw:find("name=" .. name, 1, true) ~= nil)
-                or (_buffs_raw:find("disp=" .. name, 1, true) ~= nil)
-    return found
+
+    if best ~= _prev_stacks then
+        ethy.printf("[Ranger] Spirit Link: %d stacks", best)
+        _prev_stacks = best
+    end
+
+    return best
+end
+
+local function has_buff(name)
+    return core.buff_manager.has_buff(name)
+end
+
+local function get_buff_remaining(name)
+    local data = core.buff_manager.get_buff_data(name)
+    if data and data.is_active then return data.remaining or 999 end
+    return 0
 end
 
 local function dot_needs_refresh()
-    if dot_applied_at == 0 then return true end
-    return ethy.time_since(dot_applied_at) > (DOT_DURATION - 1.5)
+    if state.dot_applied_at == 0 then return true end
+    return ethy.time_since(state.dot_applied_at) > (CONFIG.DOT_DURATION - 1.5)
+end
+
+local function gcd_ready()
+    return ethy.time_since(state.last_cast_time) >= CONFIG.TICK_RATE
 end
 
 -- ═══════════════════════════════════════════════════════════════
---  ROTATION
+--  BUFF UPKEEP
 -- ═══════════════════════════════════════════════════════════════
 
-local function do_combat(hp)
-    local stacks = get_stacks()
+-- #region agent log
+local _na_dbg_count = 0
+-- #endregion
 
-    -- 1. Emergency heal
-    if hp < EMERGENCY_HP and cast(SPELLS.LINKED_REJUV) then
-        return true
+local function maintain_buffs()
+    -- NaturesSwiftness: check BUFF name + 60-min internal CD
+    local ns_has = has_buff(BUFF.NATURES_SWIFTNESS)
+    local ns_cd_ok = (state.natures_swift_cast_at == 0) or (ethy.time_since(state.natures_swift_cast_at) >= BUFF_COOLDOWN)
+    if not ns_has and ns_cd_ok then
+        if cast(S.NATURES_SWIFTNESS) then
+            state.natures_swift_cast_at = ethy.now()
+            return true
+        end
     end
 
-    -- 2. Follow-up: Spiritburst -> Spiritlife
-    if pending_follow_up then
-        local spell = pending_follow_up
-        pending_follow_up = nil
+    -- NatureArrows: check BUFF name "Nature_Arrows" + 60-min internal CD
+    local na_has = has_buff(BUFF.NATURE_ARROWS)
+    local na_cd_ok = (state.nature_arrows_cast_at == 0) or (ethy.time_since(state.nature_arrows_cast_at) >= BUFF_COOLDOWN)
+
+    -- #region agent log
+    _na_dbg_count = _na_dbg_count + 1
+    if _na_dbg_count <= 5 then
+        _dbglog("A", "NatureArrows_buff_check_FIXED", {
+            has_Nature_Arrows = tostring(na_has),
+            type_has = type(na_has),
+            cd_ok = tostring(na_cd_ok),
+            will_cast = tostring(not na_has and na_cd_ok),
+        })
+    end
+    -- #endregion
+
+    if not na_has and na_cd_ok then
+        if cast(S.NATURE_ARROWS) then
+            state.nature_arrows_cast_at = ethy.now()
+            return true
+        end
+    end
+
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  COMBAT ROTATION
+-- ═══════════════════════════════════════════════════════════════
+
+local function do_combat(hp, mp)
+    local stacks = _prev_stacks >= 0 and _prev_stacks or get_stacks()
+
+    -- P1: Emergency heal
+    if hp < CONFIG.EMERGENCY_HP then
+        if cast(S.LINKED_REJUV) then return true end
+    end
+
+    -- P2: Follow-up combo (Spiritburst -> Spiritlife)
+    if state.follow_up then
+        local spell = state.follow_up
+        state.follow_up = nil
         if cast(spell) then return true end
     end
 
-    -- 3. Heal at moderate HP if we have stacks
-    if hp < HEAL_HP and stacks >= 2 and cast(SPELLS.LINKED_REJUV) then
-        return true
+    -- P3: Moderate heal when stacks available
+    if hp < CONFIG.HEAL_HP and stacks >= 2 then
+        if cast(S.LINKED_REJUV) then return true end
     end
 
-    -- 4. Pet attack command (1s CD, free) + Spiritbeast's Wrath (30s CD, damage)
-    cast(SPELLS.PET_ATTACK)
-    if cast(SPELLS.SPIRITBEAST_WRATH) then
-        return true
+    -- P4: Mana conservation
+    if mp < CONFIG.MANA_CONSERVE then
+        ethy.print("[Ranger] Low mana — conserving")
+        return false
     end
 
-    -- 5. Big spender: Spiritburst at 4+ stacks -> queue Spiritlife
-    if stacks >= 4 then
-        if cast(SPELLS.SPIRITBURST) then
-            pending_follow_up = SPELLS.SPIRITLIFE
-            ethy.printf("[Ranger] -> queued %s", SPELLS.SPIRITLIFE)
+    -- P5: Buff upkeep mid-combat
+    if maintain_buffs() then return true end
+
+    -- P6: Pet — fire and forget + Spiritbeast's Wrath
+    cast(S.PET_ATTACK)
+    if cast(S.SPIRITBEAST_WRATH) then return true end
+
+    -- P7: Spiritburst at 4+ stacks -> queue Spiritlife
+    if stacks >= CONFIG.BURST_STACKS then
+        if cast(S.SPIRITBURST) then
+            state.follow_up = S.SPIRITLIFE
             return true
         end
     end
 
-    -- 6. Verdant Barrage — strong on-CD ability
-    if cast(SPELLS.VERDANT_BARRAGE) then
-        return true
-    end
+    -- P8: Verdant Barrage on CD
+    if cast(S.VERDANT_BARRAGE) then return true end
 
-    -- 7. Spiritroot Arrow — DoT, apply/refresh when needed
+    -- P9: Spiritroot DoT — apply / refresh
     if dot_needs_refresh() then
-        if cast(SPELLS.SPIRITROOT) then
-            dot_applied_at = ethy.now()
+        if cast(S.SPIRITROOT) then
+            state.dot_applied_at = ethy.now()
             return true
         end
     end
 
-    -- 8. Spiritlife Arrow — spend stacks
-    if stacks >= 1 and cast(SPELLS.SPIRITLIFE) then
-        return true
+    -- P10: Spiritlife — spend excess stacks
+    if stacks >= 1 then
+        if cast(S.SPIRITLIFE) then return true end
     end
 
-    -- 9. Filler: Spirit Shot (generates stacks)
-    if cast(SPELLS.SPIRIT_SHOT) then
-        return true
+    -- P11: Spirit Shot filler (generates stacks)
+    if cast(S.SPIRIT_SHOT) then return true end
+
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  OUT-OF-COMBAT
+-- ═══════════════════════════════════════════════════════════════
+
+local function do_out_of_combat(hp, mp)
+    if maintain_buffs() then return true end
+
+    if hp < CONFIG.REST_HP or mp < CONFIG.REST_MP then
+        if mp < CONFIG.REST_MP then
+            if cast(S.MEDITATION) then return true end
+        end
+        if cast(S.REST) then return true end
     end
 
     return false
 end
 
-local function do_buffs_ooc()
-    refresh_buffs()
-    if not has_buff(SPELLS.NATURES_SWIFTNESS) and not has_buff("Nature's Swiftness") then
-        if cast(SPELLS.NATURES_SWIFTNESS) then return true end
-    end
-    if not has_buff("Nature_Arrows") and not has_buff("Nature Arrows") then
-        if cast(SPELLS.NATURE_ARROWS) then return true end
-    end
-    return false
-end
+-- ═══════════════════════════════════════════════════════════════
+--  EVENT HOOKS
+-- ═══════════════════════════════════════════════════════════════
 
-local function do_buffs_combat()
-    refresh_buffs()
-    -- #region agent log
-    _dbg("D", "do_buffs_combat called", {})
-    -- #endregion
-    if not has_buff(SPELLS.NATURES_SWIFTNESS) and not has_buff("Nature's Swiftness") then
-        if cast(SPELLS.NATURES_SWIFTNESS) then return true end
-    end
-    if not has_buff("Nature_Arrows") and not has_buff("Nature Arrows") then
-        if cast(SPELLS.NATURE_ARROWS) then return true end
-    end
-    return false
-end
+ethy.on_combat_enter(function()
+    state.follow_up      = nil
+    state.dot_applied_at = 0
+    ethy.print("[Ranger] === COMBAT ===")
+end)
+
+ethy.on_combat_leave(function()
+    state.follow_up = nil
+    ethy.print("[Ranger] === OUT OF COMBAT ===")
+end)
 
 -- ═══════════════════════════════════════════════════════════════
 --  MAIN LOOP
 -- ═══════════════════════════════════════════════════════════════
 
-ethy.print("[Ranger] Full rotation loaded (internal names from dump)")
-ethy.print("[Ranger] DPS: SpiritShot, VerdantBarrage, SpiritburstArrow, SpiritlifeArrow, SpiritrootArrow")
-ethy.print("[Ranger] Pet: PetAttack, SpiritbeastWrath")
-ethy.print("[Ranger] Buff: NaturesSwiftness, NatureArrows")
-ethy.print("[Ranger] Heal: LinkedRejuvenation")
-ethy.print("[Ranger] Rest/Leyline: DISABLED")
+ethy.print("╔══════════════════════════════════════════════════════════╗")
+ethy.print("║  Ranger Rotation Loaded                                  ║")
+ethy.print("║  DPS : SpiritShot > VerdantBarrage > Spiritburst >       ║")
+ethy.print("║        Spiritlife > SpiritrootArrow                      ║")
+ethy.print("║  Pet : PetAttack + SpiritbeastWrath                      ║")
+ethy.print("║  Buff: NaturesSwiftness + NatureArrows                   ║")
+ethy.print("║  Heal: LinkedRejuvenation                                ║")
+ethy.print("╚══════════════════════════════════════════════════════════╝")
 
-ethy.on_combat_enter(function()
-    pending_follow_up = nil
-    dot_applied_at = 0
-    ethy.print("[Ranger] Combat! Resetting rotation state")
-end)
-
-ethy.on_combat_leave(function()
-    pending_follow_up = nil
-    ethy.print("[Ranger] Combat over")
-end)
+-- #region agent log
+local _dbg_dump_tick = 0
+-- #endregion
 
 ethy.on_update(function()
     local player = ethy.get_player()
@@ -256,39 +343,35 @@ ethy.on_update(function()
     if player:is_dead() or player:is_frozen() then return end
 
     local hp = player:get_health_percent()
+    local mp = player:get_mana_percent()
     if hp <= 0 then return end
 
+    -- Monitor stacks continuously (before GCD gate)
+    get_stacks()
+
     -- #region agent log
-    _dbg_tick = _dbg_tick + 1
-    if _dbg_tick % 50 == 1 then
+    _dbg_dump_tick = _dbg_dump_tick + 1
+    if _dbg_dump_tick == 1 or _dbg_dump_tick % 200 == 0 then
         local all = core.buff_manager.get_all_buffs()
         if all then
             local names = {}
-            for i, b in ipairs(all) do
-                names[#names + 1] = string.format("%s(id=%s,stk=%s)", tostring(b.name or b.display_name or "?"), tostring(b.id or "?"), tostring(b.stacks or 0))
+            for _, b in ipairs(all) do
+                names[#names+1] = string.format("%s/%s(stk=%s,rem=%s)",
+                    tostring(b.name or "?"), tostring(b.display_name or "?"),
+                    tostring(b.stacks or 0), tostring(b.remaining or "?"))
             end
-            _dbg("A", "all_active_buffs", {count=tostring(#all), buffs=table.concat(names, "; ")})
+            _dbglog("B", "ALL_ACTIVE_BUFFS", {count = tostring(#all), buffs = table.concat(names, "; ")})
         else
-            _dbg("A", "all_active_buffs", {count="nil"})
+            _dbglog("B", "ALL_ACTIVE_BUFFS", {count = "nil"})
         end
-        local d1 = ethy.buff_manager.get_buff_data("Nature_Arrows")
-        local d2 = ethy.buff_manager.get_buff_data("NatureArrows")
-        local d3 = ethy.buff_manager.get_buff_data("Nature Arrows")
-        _dbg("A", "buff_name_test", {
-            Nature_Arrows = tostring(d1 and d1.is_active),
-            NatureArrows = tostring(d2 and d2.is_active),
-            NatureSpace = tostring(d3 and d3.is_active),
-        })
     end
     -- #endregion
 
-    if not player:in_combat() then
-        do_buffs_ooc()
-        return
+    if not gcd_ready() then return end
+
+    if player:in_combat() then
+        do_combat(hp, mp)
+    else
+        do_out_of_combat(hp, mp)
     end
-
-    if ethy.time_since(last_cast_time) < TICK_RATE then return end
-
-    if do_buffs_combat() then return end
-    do_combat(hp)
 end)

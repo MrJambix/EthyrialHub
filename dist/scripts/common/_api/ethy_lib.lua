@@ -4,14 +4,14 @@
 ║   EthyrialHub — Complete Lua API Reference Library                         ║
 ║   ─────────────────────────────────────────────────────────────────────     ║
 ║                                                                            ║
-║   Every function, table, enum, and callback available to Lua scripts.      ║
-║   Use this file as a reference when writing scripts, or require() it       ║
-║   to get autocomplete-friendly stubs.                                      ║
+║   STATUS: REFERENCE ONLY — DO NOT require() THIS FILE IN SCRIPTS          ║
 ║                                                                            ║
-║   Usage:                                                                   ║
-║     local lib = require("common/_api/ethy_lib")                            ║
+║   This file documents the ASPIRATIONAL full API surface.  Some functions   ║
+║   listed here (core.network.*, core.floor.*, and various get_*() parsed    ║
+║   helpers) are not yet implemented in lua_runtime.cpp and will be nil.     ║
 ║                                                                            ║
-║   All functions below mirror what the C++ runtime registers.               ║
+║   For the actual runtime API, see lua_runtime.cpp or use ethy_sdk.lua.     ║
+║                                                                            ║
 ║   Parameters marked [opt] are optional.                                    ║
 ║                                                                            ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -1406,13 +1406,12 @@ lib.game_object_methods = {
 
 lib.core_network = {}
 
---- core.network.server_address() -> string
---- Current game server address.
-lib.core_network.server_address = core.network.server_address
-
---- core.network.net_classes() -> string
---- Dump network-related classes.
-lib.core_network.net_classes = core.network.net_classes
+-- NOTE: core.network is NOT YET REGISTERED in lua_runtime.cpp.
+-- These bindings will be nil until implemented.
+if core.network then
+    lib.core_network.server_address = core.network.server_address
+    lib.core_network.net_classes = core.network.net_classes
+end
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
@@ -1421,18 +1420,13 @@ lib.core_network.net_classes = core.network.net_classes
 
 lib.core_floor = {}
 
---- core.floor.debug() -> string
---- Debug dump of floor item state.
-lib.core_floor.debug = core.floor.debug
-
---- core.floor.search() -> string
---- Search for items on the floor.
-lib.core_floor.search = core.floor.search
-
---- core.floor.inspect(index) -> string
---- Inspect a specific floor item by index.
---- @param index integer
-lib.core_floor.inspect = core.floor.inspect
+-- NOTE: core.floor is NOT YET REGISTERED in lua_runtime.cpp.
+-- These bindings will be nil until implemented.
+if core.floor then
+    lib.core_floor.debug = core.floor.debug
+    lib.core_floor.search = core.floor.search
+    lib.core_floor.inspect = core.floor.inspect
+end
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
@@ -1540,12 +1534,12 @@ lib.callbacks.on_combat_leave = core.register_on_combat_leave_callback
 
 --- core.register_on_buff_applied_callback(fn)
 --- Called when a buff is applied to the player.
---- @param fn function(evt)  — evt = { buff_name=string, internal_id=string, stacks=int }
+--- @param fn function(buff_name, evt)  — buff_name=string, evt = { buff_name, internal_id, stacks }
 lib.callbacks.on_buff_applied = core.register_on_buff_applied_callback
 
 --- core.register_on_buff_removed_callback(fn)
 --- Called when a buff expires or is removed from the player.
---- @param fn function(evt)  — evt = { buff_name=string, internal_id=string, stacks=int }
+--- @param fn function(buff_name, evt)  — buff_name=string, evt = { buff_name, internal_id, stacks }
 lib.callbacks.on_buff_removed = core.register_on_buff_removed_callback
 
 --- core.register_on_target_changed_callback(fn)
