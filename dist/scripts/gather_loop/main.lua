@@ -40,6 +40,8 @@ local NODES = {
     { name = "Fir Tree",        on = false, cat = "Tree" },
     { name = "Oak Tree",        on = false, cat = "Tree" },
     { name = "Acacia Tree",     on = false, cat = "Tree" },
+    { name = "Aging Acacia",    on = false, cat = "Tree" },
+    { name = "Verdant Acacia",  on = false, cat = "Tree" },
     { name = "Wispwood Tree",   on = false, cat = "Tree" },
     { name = "Spiritwood Tree", on = false, cat = "Tree" },
     { name = "Staroak Tree",    on = false, cat = "Tree" },
@@ -195,7 +197,7 @@ local function scan_matching()
     local all = parse_lines(raw)
     local matched = {}
     for _, node in ipairs(all) do
-        local available = (node.usable == 1) or (node.hidden == 0)
+        local available = (node.usable == 1) and (node.hidden == 0)
         if available
             and (node.dist or 999) <= CFG.max_range
             and not is_skipped(node.uid, node.ptr) then
