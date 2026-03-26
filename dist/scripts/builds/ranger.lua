@@ -29,6 +29,7 @@ local ethy = require("common/ethy_sdk")
 
 local CONFIG = {
     TICK_RATE       = 0.25,
+    TICK_JITTER     = 0.08,
     EMERGENCY_HP    = 30,
     HEAL_HP         = 55,
     MANA_CONSERVE   = 15,
@@ -36,6 +37,7 @@ local CONFIG = {
     REST_MP         = 50,
     DOT_DURATION    = 6.0,
     BURST_STACKS    = 4,
+    MISPLAY_CHANCE  = 0.02,
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -54,7 +56,7 @@ local S = {
     LINKED_REJUV      = "LinkedRejuvenation",
     PET_ATTACK        = "PetAttack",
     REST              = "Rest",
-    MEDITATION        = "LeylineMeditation",
+    MEDITATION        = "Meditate",
 }
 
 local BUFF = {
@@ -78,31 +80,6 @@ local state = {
     natures_swift_cast_at   = 0,
 }
 
--- #region agent log
-local _LOGPATH = [[C:\Users\mrjam\OneDrive\Desktop\EthyrialInjector\debug-11adf5.log]]
-local function _dbglog(hyp, msg, data)
-    local parts = {}
-    if data then
-        for k, v in pairs(data) do
-            parts[#parts+1] = string.format('%s=%s', tostring(k), tostring(v))
-        end
-    end
-    local summary = string.format("[DBG:%s] %s {%s}", hyp, msg, table.concat(parts, ", "))
-    ethy.print(summary)
-    local jparts = {}
-    if data then
-        for k, v in pairs(data) do
-            jparts[#jparts+1] = string.format('"%s":%s', tostring(k),
-                type(v) == "string" and ('"'..v:gsub('"','\\"')..'"') or tostring(v))
-        end
-    end
-    local line = string.format(
-        '{"sessionId":"11adf5","hypothesisId":"%s","location":"ranger.lua","message":"%s","data":{%s},"timestamp":%d}\n',
-        hyp, msg, table.concat(jparts,","), (os.time or function() return 0 end)() * 1000)
-    pcall(function() local f = io.open(_LOGPATH,"a"); if f then f:write(line); f:close() end end)
-end
--- #endregion
-
 -- ═══════════════════════════════════════════════════════════════
 --  HELPERS
 -- ═══════════════════════════════════════════════════════════════
@@ -111,18 +88,21 @@ local function cast(spell)
     if not spell or spell == "" then return false end
     if not core.spells.is_ready(spell) then return false end
 
+    if ethy.human.should_misplay(CONFIG.MISPLAY_CHANCE) then
+        return false
+    end
+
     local result = core.spells.cast(spell)
     if result and (result:find("OK") or result == "") then
-        state.last_cast_time = ethy.now()
+        local jitter = CONFIG.TICK_JITTER * (0.5 + math.random())
+        state.last_cast_time = ethy.now() + jitter
         state.last_cast_name = spell
-        ethy.printf("[Ranger] %s", spell)
         return true
     end
     return false
 end
 
 local _prev_stacks = -1
-local _stk_dbg_tick = 0
 
 local function get_stacks()
     local s1 = core.buff_manager.get_spirit_link_stacks()
@@ -135,19 +115,6 @@ local function get_stacks()
     if s2 and s2 > best then best = s2 end
     if s3 and s3 > best then best = s3 end
     if s4 and s4 > best then best = s4 end
-
-    -- #region agent log
-    _stk_dbg_tick = _stk_dbg_tick + 1
-    if _stk_dbg_tick <= 3 or best ~= _prev_stacks then
-        _dbglog("F", "spirit_link_stacks", {
-            api_shortcut = tostring(s1), type_s1 = type(s1),
-            SpiritLink = tostring(s2), type_s2 = type(s2),
-            Spirit_Link_space = tostring(s3), type_s3 = type(s3),
-            SpiritLink_Stacks = tostring(s4), type_s4 = type(s4),
-            best = tostring(best),
-        })
-    end
-    -- #endregion
 
     if best ~= _prev_stacks then
         ethy.printf("[Ranger] Spirit Link: %d stacks", best)
@@ -173,19 +140,15 @@ local function dot_needs_refresh()
 end
 
 local function gcd_ready()
-    return ethy.time_since(state.last_cast_time) >= CONFIG.TICK_RATE
+    local tick = CONFIG.TICK_RATE + (math.random() - 0.5) * CONFIG.TICK_JITTER * 2
+    return ethy.time_since(state.last_cast_time) >= tick
 end
 
 -- ═══════════════════════════════════════════════════════════════
 --  BUFF UPKEEP
 -- ═══════════════════════════════════════════════════════════════
 
--- #region agent log
-local _na_dbg_count = 0
--- #endregion
-
 local function maintain_buffs()
-    -- NaturesSwiftness: check BUFF name + 60-min internal CD
     local ns_has = has_buff(BUFF.NATURES_SWIFTNESS)
     local ns_cd_ok = (state.natures_swift_cast_at == 0) or (ethy.time_since(state.natures_swift_cast_at) >= BUFF_COOLDOWN)
     if not ns_has and ns_cd_ok then
@@ -195,21 +158,8 @@ local function maintain_buffs()
         end
     end
 
-    -- NatureArrows: check BUFF name "Nature_Arrows" + 60-min internal CD
     local na_has = has_buff(BUFF.NATURE_ARROWS)
     local na_cd_ok = (state.nature_arrows_cast_at == 0) or (ethy.time_since(state.nature_arrows_cast_at) >= BUFF_COOLDOWN)
-
-    -- #region agent log
-    _na_dbg_count = _na_dbg_count + 1
-    if _na_dbg_count <= 5 then
-        _dbglog("A", "NatureArrows_buff_check_FIXED", {
-            has_Nature_Arrows = tostring(na_has),
-            type_has = type(na_has),
-            cd_ok = tostring(na_cd_ok),
-            will_cast = tostring(not na_has and na_cd_ok),
-        })
-    end
-    -- #endregion
 
     if not na_has and na_cd_ok then
         if cast(S.NATURE_ARROWS) then
@@ -333,10 +283,6 @@ ethy.print("║  Buff: NaturesSwiftness + NatureArrows                   ║")
 ethy.print("║  Heal: LinkedRejuvenation                                ║")
 ethy.print("╚══════════════════════════════════════════════════════════╝")
 
--- #region agent log
-local _dbg_dump_tick = 0
--- #endregion
-
 ethy.on_update(function()
     local player = ethy.get_player()
     if not player then return end
@@ -346,26 +292,7 @@ ethy.on_update(function()
     local mp = player:get_mana_percent()
     if hp <= 0 then return end
 
-    -- Monitor stacks continuously (before GCD gate)
     get_stacks()
-
-    -- #region agent log
-    _dbg_dump_tick = _dbg_dump_tick + 1
-    if _dbg_dump_tick == 1 or _dbg_dump_tick % 200 == 0 then
-        local all = core.buff_manager.get_all_buffs()
-        if all then
-            local names = {}
-            for _, b in ipairs(all) do
-                names[#names+1] = string.format("%s/%s(stk=%s,rem=%s)",
-                    tostring(b.name or "?"), tostring(b.display_name or "?"),
-                    tostring(b.stacks or 0), tostring(b.remaining or "?"))
-            end
-            _dbglog("B", "ALL_ACTIVE_BUFFS", {count = tostring(#all), buffs = table.concat(names, "; ")})
-        else
-            _dbglog("B", "ALL_ACTIVE_BUFFS", {count = "nil"})
-        end
-    end
-    -- #endregion
 
     if not gcd_ready() then return end
 

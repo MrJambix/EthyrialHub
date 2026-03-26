@@ -75,9 +75,11 @@ local CFG = {
     max_range   = 40,
     gather_wait = 12,
     rest_hp     = 50,
+    humanize    = true,
 }
 
 local POLL_RATE     = 0.5
+local POLL_JITTER   = 0.15
 local MOVE_HISTORY  = 4
 local MOVE_TIMEOUT  = 15
 local SKIP_DURATION = 30
@@ -96,6 +98,31 @@ local show_window  = true
 local stats = { gathered = 0, skipped = 0, attempts = 0 }
 local skip_list = {}
 local debug_cache = nil
+
+-- #region agent log
+local DEBUG_LOG_PATH = "C:/Users/mrjam/OneDrive/Desktop/EthyrialInjector/debug-cbd804.log"
+local _dbg_run = 0
+local function _esc(s) if type(s)~="string" then return tostring(s) end return s:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\n','\\n'):gsub('\r','') end
+local function _dlog(hyp, loc, msg, kvs)
+    pcall(function()
+        local f = io.open(DEBUG_LOG_PATH, "a")
+        if not f then return end
+        local d = ""
+        if kvs then
+            local parts = {}
+            for k,v in pairs(kvs) do
+                if type(v) == "string" then parts[#parts+1] = '"'..k..'":"'.._esc(v)..'"'
+                elseif type(v) == "number" then parts[#parts+1] = '"'..k..'":'..v
+                elseif type(v) == "boolean" then parts[#parts+1] = '"'..k..'":'..(v and "true" or "false")
+                else parts[#parts+1] = '"'..k..'":"'.._esc(tostring(v))..'"' end
+            end
+            d = table.concat(parts, ",")
+        end
+        f:write('{"sessionId":"cbd804","runId":"run'.._dbg_run..'","hypothesisId":"'..hyp..'","location":"'.._esc(loc)..'","message":"'.._esc(msg)..'","data":{'..d..'},"timestamp":'..math.floor(ethy.now()*1000)..'}\n')
+        f:close()
+    end)
+end
+-- #endregion
 
 -- ═══════════════════════════════════════════════════════════════
 -- Helpers
@@ -219,13 +246,27 @@ end
 
 local function gather_tick()
     local now = ethy.now()
-    if now - last_tick < POLL_RATE then return end
+    local poll = POLL_RATE + (math.random() - 0.5) * POLL_JITTER * 2
+    if now - last_tick < poll then return end
     last_tick = now
 
     if not CFG.running then
         if STATE ~= "idle" then STATE = "idle" end
         status_msg = "Stopped"
         return
+    end
+
+    if CFG.humanize then
+        local action, duration = ethy.human.session.check()
+        if action == "long_break" then
+            status_msg = string.format("Taking a break (%.0fs)", duration)
+            _ethy_sleep(math.min(duration, 5.0))
+            return
+        elseif action == "micro_pause" then
+            status_msg = "Brief pause..."
+            _ethy_sleep(math.min(duration, 5.0))
+            return
+        end
     end
 
     local enabled = get_enabled_names()
@@ -248,10 +289,15 @@ local function gather_tick()
             return
         end
         local node = nodes[1]
-        stats.attempts = stats.attempts + 1
         -- #region agent log
-        log("-> %s ptr=%s dist=%.1f usable=%s hidden=%s", node.name or "?", tostring(node.ptr), node.dist or 0, tostring(node.usable), tostring(node.hidden))
+        local _sc = 0; for _ in pairs(skip_list) do _sc = _sc + 1 end
+        _dlog("H1C", "gather_tick:idle", "selected_node", {
+            name=node.name or "?", dist=node.dist or -1, uid=node.uid or 0,
+            ptr=node.ptr or "nil", usable=node.usable or -1, hidden=node.hidden or -1,
+            total_matched=#nodes, skip_list_size=_sc
+        })
         -- #endregion
+        stats.attempts = stats.attempts + 1
         status_msg = string.format("Using %s (%.0fm)", node.name or "?", node.dist or 0)
 
         local r = ""
@@ -261,6 +307,9 @@ local function gather_tick()
             r = core.send_command("USE_ENTITY_" .. (node.name or "")) or ""
         end
 
+        -- #region agent log
+        _dlog("H1A", "gather_tick:use", "gather_response", {response=r:sub(1,200), ptr=node.ptr or "nil", name=node.name or "?"})
+        -- #endregion
         if r:find("OK") or r:find("USED") or r:find("GATHER") then
             current_node = node
             pos_history = {}
@@ -282,10 +331,6 @@ local function gather_tick()
                 local nx, ny = current_node.x or x, current_node.y or y
                 local dx, dy = x - nx, y - ny
                 local arrive_dist = math.sqrt(dx * dx + dy * dy)
-                -- #region agent log
-                log("Settled at (%.1f,%.1f) node at (%.1f,%.1f) arrive_dist=%.1f for %s",
-                    x, y, nx, ny, arrive_dist, current_node.name or "?")
-                -- #endregion
                 if arrive_dist > 6 then
                     log("Unreachable: %s (%.1fm away), skipping", current_node.name or "?", arrive_dist)
                     skip_node(current_node.uid, current_node.ptr)
@@ -317,6 +362,14 @@ local function gather_tick()
             log("Done: %s", current_node.name or "?")
             stats.gathered = stats.gathered + 1
             skip_node(current_node.uid, current_node.ptr)
+            -- #region agent log
+            local _sk = skip_key(current_node.uid, current_node.ptr)
+            _dlog("H1C", "gather_tick:done", "gathered_and_skipped", {
+                name=current_node.name or "?", skip_key=_sk or "nil",
+                skip_expires=skip_list[_sk] or 0, now=ethy.now(),
+                uid=current_node.uid or 0, ptr=current_node.ptr or "nil"
+            })
+            -- #endregion
             cooldown_start = now
             STATE = "cooldown"
         end
@@ -401,82 +454,6 @@ local function render_imgui_window()
             end
         end
         ui.same_line()
-        -- #region agent log
-        if ui.button("Diagnose Ores") then
-            local raw = core.send_command("NODE_SCAN") or "NONE"
-            local all = parse_lines(raw)
-
-            local herb_ptr, ore_ptr, ore_hidden_ptr = nil, nil, nil
-            local herb_name, ore_name, ore_hidden_name = nil, nil, nil
-            local herb_info, ore_info, ore_hidden_info = nil, nil, nil
-
-            for _, n in ipairs(all) do
-                if not herb_ptr and n.usable == 1 and (n.hidden == 0 or n.hidden == nil) and n.ptr then
-                    local tp = n.type or ""
-                    if tp == "herb" then herb_ptr = n.ptr; herb_name = n.name; herb_info = n end
-                end
-                if not ore_hidden_ptr and n.type == "ore" and n.hidden == 0 and n.ptr then
-                    ore_hidden_ptr = n.ptr; ore_hidden_name = n.name; ore_hidden_info = n
-                end
-                if not ore_ptr and n.type == "ore" and n.ptr then
-                    ore_ptr = n.ptr; ore_name = n.name; ore_info = n
-                end
-                if herb_ptr and ore_hidden_ptr and ore_ptr then break end
-            end
-
-            log("=== ORE DIAGNOSIS (session aed47f) ===")
-            log("  Herb sample:           %s ptr=%s usable=%s hidden=%s",
-                tostring(herb_name), tostring(herb_ptr),
-                tostring(herb_info and herb_info.usable), tostring(herb_info and herb_info.hidden))
-            log("  Ore sample (hidden=0): %s ptr=%s usable=%s hidden=%s",
-                tostring(ore_hidden_name), tostring(ore_hidden_ptr),
-                tostring(ore_hidden_info and ore_hidden_info.usable), tostring(ore_hidden_info and ore_hidden_info.hidden))
-            log("  Ore sample (any):      %s ptr=%s usable=%s hidden=%s",
-                tostring(ore_name), tostring(ore_ptr),
-                tostring(ore_info and ore_info.usable), tostring(ore_info and ore_info.hidden))
-
-            local function probe(ptr, label)
-                if not ptr then log("  [%s] NO PTR AVAILABLE", label); return end
-                local r_hidden = core.send_command(string.format("READ_AT %s 0x158 bool", ptr)) or "?"
-                local r_usable = core.send_command(string.format("READ_AT %s 0x196 bool", ptr)) or "?"
-                local r_batch = core.send_command(string.format(
-                    "BATCH_READ %s 0x190:int8 0x191:int8 0x192:int8 0x193:int8 0x194:int8 0x195:int8 0x196:int8 0x197:int8 0x198:int8 0x199:int8 0x19A:int8 0x19B:int8 0x19C:int8 0x19D:int8 0x19E:int8 0x19F:int8",
-                    ptr)) or "?"
-                log("  [%s] READ_AT 0x158 bool = %s", label, r_hidden)
-                log("  [%s] READ_AT 0x196 bool = %s", label, r_usable)
-                log("  [%s] BATCH 0x190-0x19F = %s", label, r_batch)
-            end
-
-            probe(herb_ptr, "HERB_USABLE")
-            probe(ore_hidden_ptr, "ORE_VISIBLE")
-            if ore_ptr ~= ore_hidden_ptr then probe(ore_ptr, "ORE_ANY") end
-
-            local logpath = [[C:\Users\mrjam\OneDrive\Desktop\EthyrialInjector\debug-aed47f.log]]
-            local ts = tostring(os.time() or 0)
-            local ok, f = pcall(io.open, logpath, "a")
-            if ok and f then
-                local function wlog(msg, data)
-                    f:write(string.format(
-                        '{"sessionId":"aed47f","hypothesisId":"A","location":"gather_loop:diagnose","message":"%s","data":%s,"timestamp":%s}\n',
-                        msg, data, ts))
-                end
-                wlog("herb_sample", string.format('{"ptr":"%s","name":"%s","usable":%s,"hidden":%s}',
-                    tostring(herb_ptr), tostring(herb_name),
-                    tostring(herb_info and herb_info.usable or "nil"),
-                    tostring(herb_info and herb_info.hidden or "nil")))
-                wlog("ore_visible_sample", string.format('{"ptr":"%s","name":"%s","usable":%s,"hidden":%s}',
-                    tostring(ore_hidden_ptr), tostring(ore_hidden_name),
-                    tostring(ore_hidden_info and ore_hidden_info.usable or "nil"),
-                    tostring(ore_hidden_info and ore_hidden_info.hidden or "nil")))
-                f:close()
-                log("  Debug log written: %s", logpath)
-            else
-                log("  Could not write debug log (io.open not available in sandbox)")
-            end
-            log("=== END ORE DIAGNOSIS ===")
-        end
-        ui.same_line()
-        -- #endregion
         if ui.button("Discover Names") then
             local raw = core.send_command("NODE_SCAN") or "NONE"
             local all = parse_lines(raw)
@@ -543,6 +520,35 @@ local function render_imgui_window()
             log("  STATE = %s  running = %s", STATE, tostring(CFG.running))
             log("  Enabled nodes: %d", #get_enabled_names())
         end
+        -- #region agent log
+        ui.text_colored(0.5, 1.0, 0.5, "── Debug Session cbd804 ──")
+        if ui.button("Test Targeting") then
+            _dbg_run = _dbg_run + 1
+            local cmds = {"SCAN_ENEMIES", "TARGET_NEAREST", "TARGET_INFO", "HAS_TARGET", "TARGET_NAME", "SCAN_NEARBY"}
+            for _, c in ipairs(cmds) do
+                local r = core.send_command(c) or "nil"
+                _dlog("H2ALL", "test_targeting", c, {response=r:sub(1, 500), len=#r})
+                log("  %s => %s", c, r:sub(1, 200))
+            end
+            log("Targeting diagnostics logged to debug file (run %d)", _dbg_run)
+        end
+        ui.same_line()
+        if ui.button("Test Nodes") then
+            _dbg_run = _dbg_run + 1
+            local raw = core.send_command("NODE_SCAN") or "NONE"
+            local all = parse_lines(raw)
+            _dlog("H1ALL", "test_nodes", "manual_scan", {total=#all, raw_len=#raw})
+            for i, n in ipairs(all) do
+                if i <= 20 then
+                    _dlog("H1ALL", "test_nodes", "node_detail", {
+                        idx=i, name=n.name or "?", usable=n.usable or -1, hidden=n.hidden or -1,
+                        dist=n.dist or -1, uid=n.uid or 0, ptr=n.ptr or "nil", class=n.class or "?"
+                    })
+                end
+            end
+            log("Logged %d nodes to debug file (run %d)", #all, _dbg_run)
+        end
+        -- #endregion
         ui.separator()
 
         local last_cat = ""

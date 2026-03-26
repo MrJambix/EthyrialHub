@@ -244,4 +244,98 @@ function ethy.menu.button(id, label)
     return core.menu.button(id, label)
 end
 
+-- ══════════════════════════════════════════════════════════════
+-- Humanization — makes bot behavior look natural to server-side
+-- detection. All timing functions return seconds.
+-- ══════════════════════════════════════════════════════════════
+
+ethy.human = {}
+
+math.randomseed(os.time() + (os.clock() * 1000))
+
+local function box_muller()
+    local u1 = math.random()
+    local u2 = math.random()
+    if u1 < 1e-10 then u1 = 1e-10 end
+    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+end
+
+function ethy.human.gaussian_delay(mean_ms, std_ms)
+    local d = mean_ms + box_muller() * std_ms
+    d = math.max(30, math.min(d, mean_ms * 4))
+    return d / 1000
+end
+
+function ethy.human.reaction_delay()
+    return ethy.human.gaussian_delay(250, 55)
+end
+
+function ethy.human.cast_delay()
+    return ethy.human.gaussian_delay(180, 40)
+end
+
+function ethy.human.jittered_sleep(base_seconds)
+    local jitter = base_seconds * (0.7 + math.random() * 0.6)
+    _ethy_sleep(jitter)
+end
+
+function ethy.human.should_misplay(chance)
+    chance = chance or 0.03
+    return math.random() < chance
+end
+
+function ethy.human.random_pause(min_s, max_s)
+    min_s = min_s or 0.5
+    max_s = max_s or 3.0
+    _ethy_sleep(min_s + math.random() * (max_s - min_s))
+end
+
+-- Session manager: tracks play time, triggers periodic micro-breaks
+-- and longer breaks to mimic human session patterns.
+
+ethy.human.session = {
+    _start_time = nil,
+    _last_break = nil,
+    _micro_interval = nil,
+    _break_interval = nil,
+}
+
+function ethy.human.session.start()
+    local s = ethy.human.session
+    s._start_time = ethy.now()
+    s._last_break = ethy.now()
+    s._micro_interval = 300 + math.random() * 600     -- 5-15 min between micro-pauses
+    s._break_interval = 2700 + math.random() * 2700   -- 45-90 min between real breaks
+end
+
+function ethy.human.session.check()
+    local s = ethy.human.session
+    if not s._start_time then s.start() end
+
+    local now = ethy.now()
+    local since_break = now - s._last_break
+
+    if since_break >= s._break_interval then
+        local break_len = 180 + math.random() * 420   -- 3-10 min break
+        s._last_break = now + break_len
+        s._break_interval = 2700 + math.random() * 2700
+        s._micro_interval = 300 + math.random() * 600
+        return "long_break", break_len
+    end
+
+    if since_break >= s._micro_interval then
+        local pause_len = 3 + math.random() * 15      -- 3-18 sec micro-pause
+        s._last_break = now
+        s._micro_interval = 300 + math.random() * 600
+        return "micro_pause", pause_len
+    end
+
+    return "ok", 0
+end
+
+function ethy.human.session.elapsed()
+    if not ethy.human.session._start_time then return 0 end
+    return ethy.now() - ethy.human.session._start_time
+end
+
 return ethy
