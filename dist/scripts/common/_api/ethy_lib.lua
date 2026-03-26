@@ -516,6 +516,14 @@ lib.core_spells.autocast_on = core.spells.autocast_on
 --- @param spell_name string
 lib.core_spells.autocast_off = core.spells.autocast_off
 
+--- core.spells.dump_all() -> string
+--- Dump ALL spells from ALL entities in the scene (not just the player's class).
+--- Walks every entity in EntityManager + NearbyEntities, reads their spell lists,
+--- deduplicates by UniqueName, and writes a full dump to spell_dump.txt.
+--- Returns pipe-formatted string: "count=N|file=spell_dump.txt###name=...|display=...|..."
+--- @return string
+lib.core_spells.dump_all = core.spells.dump_all
+
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
 -- ║  SECTION 7 — core.spell_book.*  (SpellBook — C++ Managed)             ║

@@ -5,7 +5,7 @@
 ║  Priority (Combat):                                          ║
 ║    1. Emergency heal  (LinkedRejuvenation @ <30% HP)         ║
 ║    2. Follow-up combo (Spiritlife after Spiritburst)         ║
-║    3. Moderate heal   (LinkedRejuvenation @ <55% HP, 2+ stk)║
+║    3. Moderate heal   (LinkedRejuvenation @ <55% HP, 3 stk) ║
 ║    4. Mana gate       (stop DPS if <15% mana)                ║
 ║    5. Buff upkeep     (NaturesSwiftness, NatureArrows)       ║
 ║    6. Pet             (PetAttack + SpiritbeastWrath on CD)   ║
@@ -16,6 +16,7 @@
 ║   11. Spirit Shot     (filler, generates stacks)             ║
 ║                                                              ║
 ║  Out of Combat:                                              ║
+║    - Auto eat food (Well Fed upkeep)                         ║
 ║    - Maintain buffs (NaturesSwiftness, NatureArrows)         ║
 ║    - Rest / Meditation when low HP or mana                   ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -37,6 +38,8 @@ local CONFIG = {
     REST_MP         = 50,
     DOT_DURATION    = 6.0,
     BURST_STACKS    = 4,
+    REJUV_STACKS    = 3,
+    SPIRIT_SHOT_CAST = 1.9,
     MISPLAY_CHANCE  = 0.02,
 }
 
@@ -65,6 +68,11 @@ local BUFF = {
     SPIRIT_LINK       = "SpiritLink",
 }
 
+local WELL_FED_NAMES = {
+    "well-fedT1", "well-fedT2", "well-fedT3",
+    "WellFed", "Well Fed", "well-fed", "Well_Fed",
+}
+
 -- ═══════════════════════════════════════════════════════════════
 --  STATE
 -- ═══════════════════════════════════════════════════════════════
@@ -78,6 +86,14 @@ local state = {
     follow_up      = nil,
     nature_arrows_cast_at   = 0,
     natures_swift_cast_at   = 0,
+    spirit_shot_casting_until = 0,
+}
+
+local food_state = {
+    items     = {},
+    names     = { "(none)" },
+    last_scan = 0,
+    last_eat  = 0,
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -144,6 +160,95 @@ local function gcd_ready()
     return ethy.time_since(state.last_cast_time) >= tick
 end
 
+local _na_logged = false
+
+local function has_nature_arrows_buff()
+    local names = { "Nature_Arrows", "NatureArrows", "Nature Arrows", "NatureArrows_Buff" }
+    for _, n in ipairs(names) do
+        if core.buff_manager.has_buff(n) then
+            if not _na_logged then
+                ethy.printf("[Ranger] Nature Arrows buff detected as '%s'", n)
+                _na_logged = true
+            end
+            return true
+        end
+    end
+    _na_logged = false
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  FOOD PLUGIN
+-- ═══════════════════════════════════════════════════════════════
+
+local function is_food_item(item)
+    if item.equipped_slot and item.equipped_slot ~= 0 then return false end
+    if item.quest_item then return false end
+
+    local cat = item.category and tostring(item.category):lower() or ""
+    if cat:find("food") or cat:find("consumable") or cat:find("cook") then
+        return true
+    end
+
+    local name = item.name and item.name:lower() or ""
+    if name:find("cooked") or name:find("roasted") or name:find("grilled")
+       or name:find("stew") or name:find("pie") or name:find("bread")
+       or name:find("soup") or name:find("meal") or name:find("ration")
+       or name:find("feast") or name:find("berry") or name:find("jerky") then
+        return true
+    end
+
+    return false
+end
+
+local function scan_food_items()
+    if ethy.time_since(food_state.last_scan) < 5.0 then return end
+    food_state.last_scan = ethy.now()
+
+    local inv = core.inventory.get_items()
+    if not inv then return end
+
+    food_state.items = {}
+    food_state.names = { "(none)" }
+
+    for _, item in ipairs(inv) do
+        if is_food_item(item) then
+            food_state.items[#food_state.items + 1] = item
+            local label = item.name
+            if item.stack and item.stack > 1 then
+                label = label .. " x" .. item.stack
+            end
+            food_state.names[#food_state.names + 1] = label
+        end
+    end
+end
+
+local function has_well_fed()
+    for _, n in ipairs(WELL_FED_NAMES) do
+        if core.buff_manager.has_buff(n) then return true end
+    end
+    return false
+end
+
+local function try_eat_food()
+    if has_well_fed() then return false end
+    if ethy.time_since(food_state.last_eat) < 3.0 then return false end
+
+    local idx = core.menu.combobox("food_item", "Food Item", food_state.names, 0)
+    if idx <= 0 or idx > #food_state.items then return false end
+
+    local item = food_state.items[idx]
+    if not item then return false end
+
+    local result = core.inventory.use_item(item.uid)
+    if result then
+        food_state.last_eat = ethy.now()
+        ethy.printf("[Ranger] Eating: %s", item.name)
+        return true
+    end
+    return false
+end
+
 -- ═══════════════════════════════════════════════════════════════
 --  BUFF UPKEEP
 -- ═══════════════════════════════════════════════════════════════
@@ -158,7 +263,7 @@ local function maintain_buffs()
         end
     end
 
-    local na_has = has_buff(BUFF.NATURE_ARROWS)
+    local na_has = has_nature_arrows_buff()
     local na_cd_ok = (state.nature_arrows_cast_at == 0) or (ethy.time_since(state.nature_arrows_cast_at) >= BUFF_COOLDOWN)
 
     if not na_has and na_cd_ok then
@@ -175,25 +280,33 @@ end
 --  COMBAT ROTATION
 -- ═══════════════════════════════════════════════════════════════
 
-local function do_combat(hp, mp)
+local function do_combat(hp, mp, player)
     local stacks = _prev_stacks >= 0 and _prev_stacks or get_stacks()
+    local has_tgt = player:has_target()
 
-    -- P1: Emergency heal
-    if hp < CONFIG.EMERGENCY_HP then
+    -- P1: Emergency heal (self-cast, no target needed, 3 Spirit Link stacks)
+    if hp < CONFIG.EMERGENCY_HP and stacks >= CONFIG.REJUV_STACKS then
         if cast(S.LINKED_REJUV) then return true end
     end
 
-    -- P2: Follow-up combo (Spiritburst -> Spiritlife)
+    -- P2: Follow-up combo (Spiritburst -> Spiritlife) — requires target
     if state.follow_up then
-        local spell = state.follow_up
-        state.follow_up = nil
-        if cast(spell) then return true end
+        if not has_tgt then
+            state.follow_up = nil
+        else
+            local spell = state.follow_up
+            state.follow_up = nil
+            if cast(spell) then return true end
+        end
     end
 
-    -- P3: Moderate heal when stacks available
-    if hp < CONFIG.HEAL_HP and stacks >= 2 then
+    -- P3: Moderate heal (self-cast, no target needed, 3 Spirit Link stacks)
+    if hp < CONFIG.HEAL_HP and stacks >= CONFIG.REJUV_STACKS then
         if cast(S.LINKED_REJUV) then return true end
     end
+
+    -- No target — skip all offensive abilities
+    if not has_tgt then return false end
 
     -- P4: Mana conservation
     if mp < CONFIG.MANA_CONSERVE then
@@ -232,8 +345,11 @@ local function do_combat(hp, mp)
         if cast(S.SPIRITLIFE) then return true end
     end
 
-    -- P11: Spirit Shot filler (generates stacks)
-    if cast(S.SPIRIT_SHOT) then return true end
+    -- P11: Spirit Shot filler (generates stacks, locks movement during cast)
+    if cast(S.SPIRIT_SHOT) then
+        state.spirit_shot_casting_until = ethy.now() + CONFIG.SPIRIT_SHOT_CAST
+        return true
+    end
 
     return false
 end
@@ -243,6 +359,11 @@ end
 -- ═══════════════════════════════════════════════════════════════
 
 local function do_out_of_combat(hp, mp)
+    -- Food upkeep — eat if Well Fed is missing
+    if core.menu.get_checkbox("food_enabled") then
+        if try_eat_food() then return true end
+    end
+
     if maintain_buffs() then return true end
 
     if hp < CONFIG.REST_HP or mp < CONFIG.REST_MP then
@@ -271,6 +392,18 @@ ethy.on_combat_leave(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════════
+--  MENU UI
+-- ═══════════════════════════════════════════════════════════════
+
+ethy.on_render_menu(function()
+    if core.menu.tree_node("food_section", "Food Plugin") then
+        core.menu.checkbox("food_enabled", "Auto Eat (Well Fed)", true)
+        scan_food_items()
+        core.menu.combobox("food_item", "Food Item", food_state.names, 0)
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
 --  MAIN LOOP
 -- ═══════════════════════════════════════════════════════════════
 
@@ -280,7 +413,8 @@ ethy.print("║  DPS : SpiritShot > VerdantBarrage > Spiritburst >       ║")
 ethy.print("║        Spiritlife > SpiritrootArrow                      ║")
 ethy.print("║  Pet : PetAttack + SpiritbeastWrath                      ║")
 ethy.print("║  Buff: NaturesSwiftness + NatureArrows                   ║")
-ethy.print("║  Heal: LinkedRejuvenation                                ║")
+ethy.print("║  Heal: LinkedRejuvenation (3 Spirit Link stacks)         ║")
+ethy.print("║  Food: Auto eat when Well Fed drops (Settings panel)     ║")
 ethy.print("╚══════════════════════════════════════════════════════════╝")
 
 ethy.on_update(function()
@@ -288,16 +422,23 @@ ethy.on_update(function()
     if not player then return end
     if player:is_dead() or player:is_frozen() then return end
 
+    -- Block all movement while Spirit Shot is casting
+    if ethy.now() < state.spirit_shot_casting_until then
+        core.movement.stop()
+        return
+    end
+
     local hp = player:get_health_percent()
     local mp = player:get_mana_percent()
     if hp <= 0 then return end
 
+    scan_food_items()
     get_stacks()
 
     if not gcd_ready() then return end
 
     if player:in_combat() then
-        do_combat(hp, mp)
+        do_combat(hp, mp, player)
     else
         do_out_of_combat(hp, mp)
     end

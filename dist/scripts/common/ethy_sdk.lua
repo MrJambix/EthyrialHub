@@ -171,6 +171,10 @@ function ethy.spell_book.get_all()
     return core.spell_book.get_all_spells()
 end
 
+function ethy.spell_book.dump_all()
+    return core.spells.dump_all()
+end
+
 -- ══════════════════════════════════════════════════════════════
 -- Callback registration shortcuts
 -- ══════════════════════════════════════════════════════════════
