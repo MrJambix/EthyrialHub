@@ -16,8 +16,9 @@
 ---@type ethy_sdk_api
 local ethy = {}
 
--- Re-export enums for convenience
+-- Re-export enums and Vec3 for convenience
 ethy.enums = enums
+ethy.Vec3  = require("common/_api/vec3")
 
 -- ══════════════════════════════════════════════════════════════
 -- Logging

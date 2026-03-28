@@ -6,9 +6,9 @@
 ║    1. Emergency heal  (LinkedRejuvenation @ <30% HP)         ║
 ║    2. Follow-up combo (Spiritlife after Spiritburst)         ║
 ║    3. Moderate heal   (LinkedRejuvenation @ <55% HP, 3 stk) ║
-║    4. Mana gate       (stop DPS if <15% mana)                ║
-║    5. Buff upkeep     (NaturesSwiftness, NatureArrows)       ║
-║    6. Pet             (PetAttack + SpiritbeastWrath on CD)   ║
+║    4. INTERRUPT       (SpiritbeastWrath when target casts)  ║
+║    5. Mana gate       (stop DPS if <15% mana)                ║
+║    6. Pet attack      (PetAttack — fire and forget)         ║
 ║    7. Spiritburst     (4+ Spirit Link stacks, big hit)       ║
 ║    8. Verdant Barrage (on CD)                                ║
 ║    9. Spiritroot DoT  (apply / refresh)                      ║
@@ -17,7 +17,6 @@
 ║                                                              ║
 ║  Out of Combat:                                              ║
 ║    - Auto eat food (Well Fed upkeep)                         ║
-║    - Maintain buffs (NaturesSwiftness, NatureArrows)         ║
 ║    - Rest / Meditation when low HP or mana                   ║
 ╚══════════════════════════════════════════════════════════════╝
 ]]
@@ -50,21 +49,17 @@ local CONFIG = {
 local S = {
     SPIRIT_SHOT       = "SpiritShot",
     SPIRITBEAST_WRATH = "SpiritbeastWrath",
-    NATURES_SWIFTNESS = "NaturesSwiftness",
-    NATURE_ARROWS     = "NatureArrows",
     SPIRITBURST       = "SpiritburstArrow",
     SPIRITLIFE        = "SpiritlifeArrow",
     VERDANT_BARRAGE   = "VerdantBarrage",
     SPIRITROOT        = "SpiritrootArrow",
     LINKED_REJUV      = "LinkedRejuvenation",
     PET_ATTACK        = "PetAttack",
-    REST              = "Rest",
+    REST              = "RestSpell", -- name= in SPELLS_ALL (display is "Rest")
     MEDITATION        = "Meditate",
 }
 
 local BUFF = {
-    NATURE_ARROWS     = "Nature_Arrows",
-    NATURES_SWIFTNESS = "NaturesSwiftness",
     SPIRIT_LINK       = "SpiritLink",
 }
 
@@ -74,19 +69,119 @@ local WELL_FED_NAMES = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
---  STATE
+--  DEBUG
 -- ═══════════════════════════════════════════════════════════════
 
-local BUFF_COOLDOWN = 3600
+local DBG = {
+    enabled         = false,
+    last_full_dump  = 0,
+    dump_interval   = 3.0,
+    last_summary    = 0,
+    summary_interval = 5.0,
+}
+
+local function dbg(fmt, ...)
+    if not DBG.enabled then return end
+    ethy.printf("[DBG] " .. fmt, ...)
+end
+
+local function dbg_dump_all_buffs()
+    if not DBG.enabled then return end
+    if ethy.time_since(DBG.last_full_dump) < DBG.dump_interval then return end
+    DBG.last_full_dump = ethy.now()
+
+    ethy.print("┌─── BUFF DEBUG DUMP ───────────────────────────────")
+
+    -- Path 1: C++ BuffManager
+    local buffs = core.buff_manager.get_all_buffs()
+    if buffs and #buffs > 0 then
+        ethy.printf("│ BuffManager: %d buff(s)", #buffs)
+        for i, b in ipairs(buffs) do
+            ethy.printf("│  [%d] name=%-25s disp=%-20s id=%-20s stacks=%s dur=%.1f/%.1f %s",
+                i,
+                b.name or "nil",
+                b.display_name or "nil",
+                b.id or "nil",
+                tostring(b.stacks or "?"),
+                b.elapsed or 0, b.max_duration or 0,
+                b.is_debuff and "(debuff)" or "")
+        end
+    else
+        ethy.print("│ BuffManager: (empty or nil)")
+    end
+
+    -- Path 2: Raw pipe BUFF_LIST
+    local raw = core.send_command("BUFF_LIST")
+    if raw and raw ~= "NONE" and raw ~= "" then
+        local count_str = raw:match("count=(%d+)")
+        ethy.printf("│ Pipe BUFF_LIST: count=%s", count_str or "?")
+        local idx = 0
+        for entry in raw:gmatch("[^|][^|][^|]+") do
+            if not entry:match("^count=") then
+                idx = idx + 1
+                if idx <= 20 then
+                    ethy.printf("│  [%d] %s", idx, entry:sub(1, 120))
+                end
+            end
+        end
+        if idx > 20 then ethy.printf("│  ... and %d more", idx - 20) end
+    else
+        ethy.printf("│ Pipe BUFF_LIST: %s", tostring(raw))
+    end
+
+    -- Path 3: Check specific buff names we care about
+    local check_names = {
+        "SpiritLink", "Spirit Link", "SpiritLink_Stacks", "Spirit_Link",
+        "well-fedT1", "well-fedT2", "well-fedT3", "WellFed", "Well Fed",
+    }
+    ethy.print("│ has_buff / get_stacks checks:")
+    for _, n in ipairs(check_names) do
+        local has = core.buff_manager.has_buff(n)
+        local stk = core.buff_manager.get_stacks(n)
+        if has or (stk and stk > 0) then
+            ethy.printf("│  ✓ %-30s has=%s stacks=%s", n, tostring(has), tostring(stk))
+        end
+    end
+
+    -- Path 4: Dedicated spirit link check
+    local sl = core.buff_manager.get_spirit_link_stacks()
+    ethy.printf("│ get_spirit_link_stacks() = %s", tostring(sl))
+
+    -- Path 5: Raw pipe BUFF_STACKS for SpiritLink
+    for _, bname in ipairs({"SpiritLink", "Spirit Link", "SpiritLink_Stacks"}) do
+        local r = core.send_command("BUFF_STACKS " .. bname)
+        if r and r ~= "NOT_FOUND" then
+            ethy.printf("│ BUFF_STACKS '%s' => %s", bname, r:sub(1, 100))
+        end
+    end
+
+    ethy.print("└───────────────────────────────────────────────────")
+end
+
+local function dbg_cast(spell, result)
+    if not DBG.enabled then return end
+    dbg("CAST %-25s => %s", spell, tostring(result))
+end
+
+local function dbg_tick_summary(hp, mp, in_combat, stacks)
+    if not DBG.enabled then return end
+    if ethy.time_since(DBG.last_summary) < DBG.summary_interval then return end
+    DBG.last_summary = ethy.now()
+    dbg("TICK hp=%.0f mp=%.0f combat=%s stacks=%d follow_up=%s",
+        hp, mp, tostring(in_combat), stacks, tostring(state and state.follow_up or "nil"))
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  STATE
+-- ═══════════════════════════════════════════════════════════════
 
 local state = {
     last_cast_time = 0,
     last_cast_name = "",
     dot_applied_at = 0,
     follow_up      = nil,
-    nature_arrows_cast_at   = 0,
-    natures_swift_cast_at   = 0,
     spirit_shot_casting_until = 0,
+    last_interrupt_time = 0,
 }
 
 local food_state = {
@@ -102,13 +197,18 @@ local food_state = {
 
 local function cast(spell)
     if not spell or spell == "" then return false end
-    if not core.spells.is_ready(spell) then return false end
+    if not core.spells.is_ready(spell) then
+        dbg("CAST %-25s => NOT_READY", spell)
+        return false
+    end
 
     if ethy.human.should_misplay(CONFIG.MISPLAY_CHANCE) then
+        dbg("CAST %-25s => MISPLAY_SKIP", spell)
         return false
     end
 
     local result = core.spells.cast(spell)
+    dbg_cast(spell, result)
     if result and (result:find("OK") or result == "") then
         local jitter = CONFIG.TICK_JITTER * (0.5 + math.random())
         state.last_cast_time = ethy.now() + jitter
@@ -158,23 +258,6 @@ end
 local function gcd_ready()
     local tick = CONFIG.TICK_RATE + (math.random() - 0.5) * CONFIG.TICK_JITTER * 2
     return ethy.time_since(state.last_cast_time) >= tick
-end
-
-local _na_logged = false
-
-local function has_nature_arrows_buff()
-    local names = { "Nature_Arrows", "NatureArrows", "Nature Arrows", "NatureArrows_Buff" }
-    for _, n in ipairs(names) do
-        if core.buff_manager.has_buff(n) then
-            if not _na_logged then
-                ethy.printf("[Ranger] Nature Arrows buff detected as '%s'", n)
-                _na_logged = true
-            end
-            return true
-        end
-    end
-    _na_logged = false
-    return false
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -250,29 +333,27 @@ local function try_eat_food()
 end
 
 -- ═══════════════════════════════════════════════════════════════
---  BUFF UPKEEP
+--  INTERRUPT — fires SpiritbeastWrath when target is casting
 -- ═══════════════════════════════════════════════════════════════
 
-local function maintain_buffs()
-    local ns_has = has_buff(BUFF.NATURES_SWIFTNESS)
-    local ns_cd_ok = (state.natures_swift_cast_at == 0) or (ethy.time_since(state.natures_swift_cast_at) >= BUFF_COOLDOWN)
-    if not ns_has and ns_cd_ok then
-        if cast(S.NATURES_SWIFTNESS) then
-            state.natures_swift_cast_at = ethy.now()
-            return true
-        end
+local INTERRUPT_COOLDOWN = 1.0
+
+local function try_interrupt()
+    if ethy.time_since(state.last_interrupt_time) < INTERRUPT_COOLDOWN then
+        return false
     end
 
-    local na_has = has_nature_arrows_buff()
-    local na_cd_ok = (state.nature_arrows_cast_at == 0) or (ethy.time_since(state.nature_arrows_cast_at) >= BUFF_COOLDOWN)
+    local casting = core.targeting.target_casting()
+    if not casting then return false end
 
-    if not na_has and na_cd_ok then
-        if cast(S.NATURE_ARROWS) then
-            state.nature_arrows_cast_at = ethy.now()
-            return true
-        end
+    if cast(S.SPIRITBEAST_WRATH) then
+        state.last_interrupt_time = ethy.now()
+        ethy.printf("[Ranger] INTERRUPT: %s (%.1fs / %.1fs)",
+            casting.spell or "unknown",
+            casting.elapsed or 0,
+            casting.duration or 0)
+        return true
     end
-
     return false
 end
 
@@ -305,21 +386,22 @@ local function do_combat(hp, mp, player)
         if cast(S.LINKED_REJUV) then return true end
     end
 
+    -- P4: INTERRUPT — highest offensive priority, fires before anything else
+    if has_tgt and core.menu.get_checkbox("interrupt_enabled") then
+        if try_interrupt() then return true end
+    end
+
     -- No target — skip all offensive abilities
     if not has_tgt then return false end
 
-    -- P4: Mana conservation
+    -- P5: Mana conservation
     if mp < CONFIG.MANA_CONSERVE then
         ethy.print("[Ranger] Low mana — conserving")
         return false
     end
 
-    -- P5: Buff upkeep mid-combat
-    if maintain_buffs() then return true end
-
-    -- P6: Pet — fire and forget + Spiritbeast's Wrath
+    -- P6: Pet attack (fire and forget)
     cast(S.PET_ATTACK)
-    if cast(S.SPIRITBEAST_WRATH) then return true end
 
     -- P7: Spiritburst at 4+ stacks -> queue Spiritlife
     if stacks >= CONFIG.BURST_STACKS then
@@ -364,8 +446,6 @@ local function do_out_of_combat(hp, mp)
         if try_eat_food() then return true end
     end
 
-    if maintain_buffs() then return true end
-
     if hp < CONFIG.REST_HP or mp < CONFIG.REST_MP then
         if mp < CONFIG.REST_MP then
             if cast(S.MEDITATION) then return true end
@@ -396,10 +476,16 @@ end)
 -- ═══════════════════════════════════════════════════════════════
 
 ethy.on_render_menu(function()
+    core.menu.checkbox("interrupt_enabled", "Auto Interrupt (Wrath)", true)
     if core.menu.tree_node("food_section", "Food Plugin") then
         core.menu.checkbox("food_enabled", "Auto Eat (Well Fed)", true)
         scan_food_items()
         core.menu.combobox("food_item", "Food Item", food_state.names, 0)
+    end
+    if core.menu.tree_node("debug_section", "Debug") then
+        DBG.enabled = core.menu.checkbox("dbg_buffs", "Buff Debug (verbose log)", false)
+        core.menu.slider_float("dbg_interval", "Dump interval (s)", DBG.dump_interval, 1.0, 15.0)
+        DBG.dump_interval = core.menu.get_slider_float("dbg_interval") or 3.0
     end
 end)
 
@@ -409,10 +495,10 @@ end)
 
 ethy.print("╔══════════════════════════════════════════════════════════╗")
 ethy.print("║  Ranger Rotation Loaded                                  ║")
+ethy.print("║  INT : SpiritbeastWrath (auto on target cast)           ║")
 ethy.print("║  DPS : SpiritShot > VerdantBarrage > Spiritburst >       ║")
 ethy.print("║        Spiritlife > SpiritrootArrow                      ║")
-ethy.print("║  Pet : PetAttack + SpiritbeastWrath                      ║")
-ethy.print("║  Buff: NaturesSwiftness + NatureArrows                   ║")
+ethy.print("║  Pet : PetAttack (fire and forget)                       ║")
 ethy.print("║  Heal: LinkedRejuvenation (3 Spirit Link stacks)         ║")
 ethy.print("║  Food: Auto eat when Well Fed drops (Settings panel)     ║")
 ethy.print("╚══════════════════════════════════════════════════════════╝")
@@ -434,6 +520,9 @@ ethy.on_update(function()
 
     scan_food_items()
     get_stacks()
+
+    dbg_dump_all_buffs()
+    dbg_tick_summary(hp, mp, player:in_combat(), _prev_stacks >= 0 and _prev_stacks or 0)
 
     if not gcd_ready() then return end
 

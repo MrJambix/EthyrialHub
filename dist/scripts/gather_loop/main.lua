@@ -7,32 +7,7 @@
 ╚══════════════════════════════════════════════════════════════╝
 ]]
 
-
-local function find_and_ensure_path(module)
-    local mod_path = module:gsub("%.", "/") .. ".lua"
-    for path in package.path:gmatch("[^;]+") do
-        local candidate = path:gsub("%?", module:gsub("%.", "/"))
-        local f = io.open(candidate, "r")
-        if f then
-            f:close()
-            return -- already findable, we're good
-        end
-    end
-    -- Not found in current path, try to locate it relative to cwd
-    local search_dirs = {"dist/scripts/", "scripts/", "lua/", ""}
-    for _, dir in ipairs(search_dirs) do
-        local f = io.open(dir .. mod_path, "r")
-        if f then
-            f:close()
-            package.path = dir .. "?.lua;" .. dir .. "?/init.lua;" .. package.path
-            return
-        end
-    end
-end
-
-find_and_ensure_path("common/ethy_sdk")
 local ethy = require("common/ethy_sdk")
-
 local ui = core.imgui
 
 ethy.print("=== Gather Loop loaded ===")
@@ -43,52 +18,56 @@ ethy.print("  ImGui window mode — own floating window")
 -- ═══════════════════════════════════════════════════════════════
 
 local NODES = {
-    { name = "Copper Vein",     on = false, cat = "Ore"  },
-    { name = "Iron Ore",        on = false, cat = "Ore"  },
-    { name = "Iron Vein",       on = false, cat = "Ore"  },
-    { name = "Coal Vein",       on = false, cat = "Ore"  },
-    { name = "Silver Vein",     on = false, cat = "Ore"  },
-    { name = "Gold Vein",       on = false, cat = "Ore"  },
-    { name = "Ethyrite",        on = false, cat = "Ore"  },
-    { name = "Platinum",        on = false, cat = "Ore"  },
-    { name = "Palladium Vein",  on = true,  cat = "Ore"  },
-    { name = "Azurium Vein",    on = true,  cat = "Ore"  },
-    { name = "Mystril",         on = false, cat = "Ore"  },
-    { name = "Rough Gem",       on = false, cat = "Ore"  },
-    { name = "Regular Gem",     on = false, cat = "Ore"  },
-    { name = "Brilliant Gem",   on = false, cat = "Ore"  },
+    { name = "Copper Vein",       on = false, cat = "Ore"  },
+    { name = "Iron Ore",          on = false, cat = "Ore"  },
+    { name = "Iron Vein",         on = false, cat = "Ore"  },
+    { name = "Coal Vein",         on = false, cat = "Ore"  },
+    { name = "Silver Vein",       on = false, cat = "Ore"  },
+    { name = "Gold Vein",         on = false, cat = "Ore"  },
+    { name = "Ethyrite",          on = false, cat = "Ore"  },
+    { name = "Platinum",          on = false, cat = "Ore"  },
+    { name = "Palladium Vein",    on = true,  cat = "Ore"  },
+    { name = "Azurium Vein",      on = true,  cat = "Ore"  },
+    { name = "Mystril",           on = false, cat = "Ore"  },
+    { name = "Rough Gem",         on = false, cat = "Ore"  },
+    { name = "Regular Gem",       on = false, cat = "Ore"  },
+    { name = "Brilliant Gem",     on = false, cat = "Ore"  },
 
-    { name = "Dead Tree",       on = false, cat = "Tree" },
-    { name = "Pine Tree",       on = false, cat = "Tree" },
-    { name = "Birch Tree",      on = false, cat = "Tree" },
-    { name = "Aging Birch",     on = false, cat = "Tree" },
-    { name = "Fir Tree",        on = false, cat = "Tree" },
-    { name = "Oak Tree",        on = false, cat = "Tree" },
-    { name = "Acacia Tree",     on = false, cat = "Tree" },
-    { name = "Aging Acacia",    on = false, cat = "Tree" },
-    { name = "Verdant Acacia",  on = false, cat = "Tree" },
-    { name = "Wispwood Tree",   on = false, cat = "Tree" },
-    { name = "Spiritwood Tree", on = false, cat = "Tree" },
-    { name = "Staroak Tree",    on = false, cat = "Tree" },
-    { name = "Moonwillow Tree", on = false, cat = "Tree" },
-    { name = "Aetherbark Tree", on = false, cat = "Tree" },
-    { name = "Mana Ash Tree",   on = false, cat = "Tree" },
-    { name = "Elystram Tree",   on = false, cat = "Tree" },
-    { name = "Shadewood Tree",  on = false, cat = "Tree" },
-    { name = "Duskroot Tree",   on = false, cat = "Tree" },
-    { name = "Primordial Tree", on = false, cat = "Tree" },
+    -- Each entry matches all variants (e.g. "Acacia" → Acacia Tree, Aging Acacia, Ancient Acacia, Verdant Acacia)
+    { name = "Dead Tree",         on = false, cat = "Tree" },
+    { name = "Pine",              on = false, cat = "Tree" },
+    { name = "Birch",             on = false, cat = "Tree" },
+    { name = "Fir",               on = false, cat = "Tree" },
+    { name = "Oak",               on = false, cat = "Tree" },
+    { name = "Acacia",            on = false, cat = "Tree" },
+    { name = "Apple Tree",        on = false, cat = "Tree" },
+    { name = "Wispwood",          on = false, cat = "Tree" },
+    { name = "Spiritwood",        on = false, cat = "Tree" },
+    { name = "Staroak",           on = false, cat = "Tree" },
+    { name = "Moonwillow",        on = false, cat = "Tree" },
+    { name = "Aetherbark",        on = false, cat = "Tree" },
+    { name = "Mana Ash",          on = false, cat = "Tree" },
+    { name = "Elystram",          on = false, cat = "Tree" },
+    { name = "Shadewood",         on = false, cat = "Tree" },
+    { name = "Duskroot",          on = false, cat = "Tree" },
+    { name = "Primordial",        on = false, cat = "Tree" },
 
-    { name = "Hemp Bush",       on = false, cat = "Herb" },
-    { name = "Redban Flower",   on = false, cat = "Herb" },
-    { name = "Rinthistle",      on = false, cat = "Herb" },
-    { name = "Flax Flower",     on = false, cat = "Herb" },
-    { name = "Cotton Plant",    on = false, cat = "Herb" },
-    { name = "Slitherstrand",   on = false, cat = "Herb" },
-    { name = "Champignon",      on = false, cat = "Herb" },
-    { name = "Lurker Fungus",   on = false, cat = "Herb" },
-    { name = "Wispbloom",       on = false, cat = "Herb" },
-    { name = "Sunthistle",      on = false, cat = "Herb" },
-    { name = "Duskthorn",       on = false, cat = "Herb" },
+    { name = "Hemp Bush",         on = false, cat = "Herb" },
+    { name = "Redban Flower",     on = false, cat = "Herb" },
+    { name = "Rinthistle",        on = false, cat = "Herb" },
+    { name = "Flax Flower",       on = false, cat = "Herb" },
+    { name = "Cotton Plant",      on = false, cat = "Herb" },
+    { name = "Slitherstrand",     on = false, cat = "Herb" },
+    { name = "Champignon",        on = false, cat = "Herb" },
+    { name = "Lurker Fungus",     on = false, cat = "Herb" },
+    { name = "Wispbloom",         on = false, cat = "Herb" },
+    { name = "Sunthistle",        on = false, cat = "Herb" },
+    { name = "Duskthorn",         on = false, cat = "Herb" },
+    { name = "Forest Canna",      on = false, cat = "Herb" },
+    { name = "Ginshade",          on = false, cat = "Herb" },
+    { name = "Frost Flower",      on = false, cat = "Herb" },
+    { name = "Glowshroom",        on = false, cat = "Herb" },
+    { name = "Dark Dragon Plant", on = false, cat = "Herb" },
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -110,17 +89,27 @@ local MOVE_TIMEOUT  = 15
 local SKIP_DURATION = 30
 local COOLDOWN      = 1.5
 
+local CAT_SCAN_CMDS = {
+    Ore  = { "SCENE_SCAN_ORES",  "NODE_SCAN_USABLE_ore"  },
+    Tree = { "SCENE_SCAN_TREES", "NODE_SCAN_USABLE_tree" },
+    Herb = { "SCENE_SCAN_HERBS", "NODE_SCAN_USABLE_herb" },
+}
+
 local STATE       = "idle"
 local status_msg  = "Configure nodes and press Start"
 local pos_history = {}
 local gather_start = 0
 local walk_start   = 0
 local cooldown_start = 0
+local dead_start   = 0
 local current_node = nil
 local last_tick    = 0
 local show_window  = true
 
-local stats = { gathered = 0, skipped = 0, attempts = 0 }
+local DEAD_TIMEOUT = 120
+local RESPAWN_DELAY = 3.0
+
+local stats = { gathered = 0, skipped = 0, attempts = 0, deaths = 0 }
 local skip_list = {}
 local debug_cache = nil
 
@@ -179,6 +168,12 @@ local function skip_node(uid, ptr)
     end
 end
 
+local function norm_ptr(p)
+    if not p then return nil end
+    local s = tostring(p):upper():gsub("^0X", "")
+    return (s ~= "") and s or nil
+end
+
 local function get_pos()
     local raw = core.send_command("PLAYER_POS")
     if not raw or raw == "" then return nil, nil end
@@ -233,9 +228,35 @@ local function get_enabled_names()
     return names
 end
 
+local function get_enabled_categories()
+    local cats = {}
+    for _, n in ipairs(NODES) do
+        if n.on then cats[n.cat] = true end
+    end
+    return cats
+end
+
+local stale_hp_count = 0
+local STALE_HP_THRESHOLD = 5  -- consecutive bad reads before declaring dead
+
 local function is_safe()
     local hp = core.player.hp()
-    if not hp or hp <= 0 then return false, string.format("Dead (hp=%s)", tostring(hp)) end
+    if not hp or hp <= 0 then
+        -- Check if this is a stale pipe read vs actual death.
+        -- If max_hp is also 0/nil, the pipe is returning garbage — not a real death.
+        local max_hp = core.player.max_hp()
+        if not max_hp or max_hp <= 0 then
+            stale_hp_count = stale_hp_count + 1
+            if stale_hp_count >= STALE_HP_THRESHOLD then
+                return false, string.format("Dead (hp=%s, stale=%d)", tostring(hp), stale_hp_count)
+            end
+            return false, string.format("Stale HP read (%d/%d) — retrying", stale_hp_count, STALE_HP_THRESHOLD)
+        end
+        -- max_hp is valid but hp is 0 — genuinely dead
+        stale_hp_count = 0
+        return false, string.format("Dead (hp=%s)", tostring(hp))
+    end
+    stale_hp_count = 0
     if core.player.combat() then return false, "In combat" end
     if core.player.frozen() then return false, "Frozen" end
     if hp < CFG.rest_hp then return false, string.format("Low HP (%.0f%%)", hp) end
@@ -245,12 +266,57 @@ end
 local function scan_matching()
     local enabled = get_enabled_names()
     if #enabled == 0 then return {} end
-    local raw = core.send_command("NODE_SCAN")
-    local all = parse_lines(raw)
+
+    local cats = get_enabled_categories()
+
+    -- Merge scan results from multiple commands, dedup by pointer
+    local by_ptr = {}
+    local no_ptr = {}
+
+    local function merge_raw(raw)
+        for _, node in ipairs(parse_lines(raw or "")) do
+            local pk = norm_ptr(node.ptr)
+            if pk then
+                local existing = by_ptr[pk]
+                if not existing then
+                    by_ptr[pk] = node
+                else
+                    if node.usable ~= nil and existing.usable == nil then
+                        existing.usable = node.usable
+                    end
+                    if node.hidden ~= nil and existing.hidden == nil then
+                        existing.hidden = node.hidden
+                    end
+                    if node.dist and (not existing.dist or node.dist < existing.dist) then
+                        existing.dist = node.dist
+                    end
+                end
+            else
+                no_ptr[#no_ptr + 1] = node
+            end
+        end
+    end
+
+    -- Type-specific scans for each enabled category
+    for cat, _ in pairs(cats) do
+        local cmds = CAT_SCAN_CMDS[cat]
+        if cmds then
+            for _, cmd in ipairs(cmds) do
+                merge_raw(core.send_command(cmd))
+            end
+        end
+    end
+
+    -- Generic NODE_SCAN as fallback
+    merge_raw(core.send_command("NODE_SCAN"))
+
+    -- Filter merged results
     local matched = {}
-    for _, node in ipairs(all) do
-        local available = (node.usable == 1) and (node.hidden == 0)
-        if available
+
+    local function try_match(node)
+        local hidden = (node.hidden == nil) and 0 or node.hidden
+        -- Skip hidden nodes but ignore usable flag (unreliable for some node types)
+        if hidden == 0
             and (node.dist or 999) <= CFG.max_range
             and not is_skipped(node.uid, node.ptr) then
             for _, want in ipairs(enabled) do
@@ -261,6 +327,10 @@ local function scan_matching()
             end
         end
     end
+
+    for _, node in pairs(by_ptr) do try_match(node) end
+    for _, node in ipairs(no_ptr) do try_match(node) end
+
     table.sort(matched, function(a, b) return (a.dist or 999) < (b.dist or 999) end)
     return matched
 end
@@ -300,8 +370,41 @@ local function gather_tick()
         return
     end
 
+    -- Handle dead state: wait for respawn, then resume
+    if STATE == "dead" then
+        local hp = core.player.hp()
+        local elapsed = now - dead_start
+        if hp and hp > 0 then
+            log("Respawned after %.0fs. Resuming...", elapsed)
+            status_msg = "Respawned — resuming..."
+            _ethy_sleep(RESPAWN_DELAY)
+            STATE = "idle"
+        elseif elapsed > DEAD_TIMEOUT then
+            log("Respawn timeout (%.0fs). Stopping.", DEAD_TIMEOUT)
+            status_msg = "Respawn timeout — stopped"
+            CFG.running = false
+            STATE = "idle"
+        else
+            status_msg = string.format("Dead — waiting for respawn (%.0fs)", elapsed)
+        end
+        return
+    end
+
     local safe, reason = is_safe()
     if not safe then
+        if reason:find("^Stale") then
+            -- Pipe returned bad data — skip this tick and retry next cycle
+            status_msg = reason
+            return
+        end
+        if reason:find("^Dead") then
+            stats.deaths = stats.deaths + 1
+            log("Died! (Deaths: %d) Waiting for respawn...", stats.deaths)
+            dead_start = now
+            STATE = "dead"
+            status_msg = "Dead — waiting for respawn (0s)"
+            return
+        end
         status_msg = reason .. " — paused"
         STATE = "idle"
         return
@@ -452,7 +555,7 @@ local function render_imgui_window()
             end
         end
         ui.same_line()
-        ui.text(string.format("  Gathered: %d  Skipped: %d", stats.gathered, stats.skipped))
+        ui.text(string.format("  Gathered: %d  Skipped: %d  Deaths: %d", stats.gathered, stats.skipped, stats.deaths))
         ui.separator()
 
         CFG.max_range   = ui.slider_int("Range (m)",       CFG.max_range,   5, 80)
@@ -460,10 +563,23 @@ local function render_imgui_window()
         CFG.rest_hp     = ui.slider_int("Rest HP %",       CFG.rest_hp,    10, 90)
 
         if ui.button("Scan Nodes") then
-            local raw = core.send_command("NODE_SCAN") or "NONE"
-            local all = parse_lines(raw)
-            log("=== NODE SCAN: %d nodes ===", #all)
-            for _, n in ipairs(all) do
+            local all_nodes = {}
+            local seen_ptr = {}
+            local function add_from(cmd)
+                for _, n in ipairs(parse_lines(core.send_command(cmd) or "")) do
+                    local pk = norm_ptr(n.ptr)
+                    if not pk or not seen_ptr[pk] then
+                        if pk then seen_ptr[pk] = true end
+                        all_nodes[#all_nodes + 1] = n
+                    end
+                end
+            end
+            for _, cmds in pairs(CAT_SCAN_CMDS) do
+                for _, cmd in ipairs(cmds) do add_from(cmd) end
+            end
+            add_from("NODE_SCAN")
+            log("=== MULTI SCAN: %d nodes ===", #all_nodes)
+            for _, n in ipairs(all_nodes) do
                 log("  [%s] class=%s dist=%.1f usable=%s ptr=%s",
                     tostring(n.name or "?"), tostring(n.class or "?"),
                     n.dist or 0, tostring(n.usable), tostring(n.ptr or "?"))
@@ -480,8 +596,21 @@ local function render_imgui_window()
         end
         ui.same_line()
         if ui.button("Discover Names") then
-            local raw = core.send_command("NODE_SCAN") or "NONE"
-            local all = parse_lines(raw)
+            local all = {}
+            local seen_ptr = {}
+            local function add_from(cmd)
+                for _, n in ipairs(parse_lines(core.send_command(cmd) or "")) do
+                    local pk = norm_ptr(n.ptr)
+                    if not pk or not seen_ptr[pk] then
+                        if pk then seen_ptr[pk] = true end
+                        all[#all + 1] = n
+                    end
+                end
+            end
+            for _, cmds in pairs(CAT_SCAN_CMDS) do
+                for _, cmd in ipairs(cmds) do add_from(cmd) end
+            end
+            add_from("NODE_SCAN")
             local known_lower = {}
             for _, n in ipairs(NODES) do
                 known_lower[n.name:lower()] = true

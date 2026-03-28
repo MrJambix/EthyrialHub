@@ -1286,13 +1286,90 @@ lib.core_menu.set_checkbox = core.menu.set_checkbox
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║  SECTION 19 — core.graphics.*  (Overlay Drawing)                       ║
+-- ║  SECTION 19 — core.graphics.*  (Overlay Drawing — 2D & 3D)            ║
 -- ║                                                                        ║
--- ║  Draw 2D overlays on screen. Only works inside on_render callbacks.   ║
+-- ║  Draw overlays on screen (2D) or in game world (3D).                  ║
+-- ║  Only works inside on_render callbacks.                                ║
 -- ║  Colors are hex integers: 0xRRGGBB (e.g. 0xFF0000 = red).            ║
+-- ║                                                                        ║
+-- ║  3D drawing requires calling set_camera() first each frame to set     ║
+-- ║  up the projection matrix. Camera data comes from                     ║
+-- ║  core.camera.get_parsed() — see the projection model below.          ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 
 lib.core_graphics = {}
+
+-- ── Utilities ────────────────────────────────────────────────────────────────
+
+--- core.graphics.color(r, g, b [, a]) -> integer
+--- Build a color integer from RGBA components (0–255).
+--- @param r integer  Red (0–255)
+--- @param g integer  Green (0–255)
+--- @param b integer  Blue (0–255)
+--- @param a integer  [opt] Alpha (0–255), default 255
+--- @return integer   — packed color value for draw calls
+lib.core_graphics.color = core.graphics.color
+
+--- core.graphics.screen_size() -> number, number
+--- Returns the current screen/window dimensions.
+--- @return number  width
+--- @return number  height
+---
+--- Example:
+---   local w, h = core.graphics.screen_size()
+---   core.graphics.text_2d(w/2, h/2, "Center!", 0xFFFFFF)
+---
+lib.core_graphics.screen_size = core.graphics.screen_size
+
+-- ── Camera / 3D Projection ──────────────────────────────────────────────────
+--
+-- Ethyrial uses a third-person camera that orbits the player.
+-- The projection model:
+--   cam_pos  = player_pos + spherical(distance, angle, pitch)
+--   forward  = normalize(player_pos - cam_pos)
+--   right    = normalize(cross(world_up, forward))
+--   up_real  = cross(forward, right)
+--
+-- You must call set_camera() at the start of each on_render frame
+-- before any 3D draw calls or world_to_screen conversions.
+
+--- core.graphics.set_camera(camX, camY, camZ, lookX, lookY, lookZ [, fov])
+--- Set up the 3D projection matrix for world_to_screen and 3D drawing.
+--- Camera position is where the camera IS; look position is where it LOOKS.
+--- @param camX   number  — camera world X
+--- @param camY   number  — camera world Y
+--- @param camZ   number  — camera world Z
+--- @param lookX  number  — look-at world X (usually player X)
+--- @param lookY  number  — look-at world Y (usually player Y)
+--- @param lookZ  number  — look-at world Z (usually player Z)
+--- @param fov    number  [opt] — field of view in degrees, default 60
+---
+--- Example:
+---   local cam = core.camera.get_parsed()
+---   local pos = core.player.get_position()
+---   core.graphics.set_camera(cam.x, cam.y, cam.z, pos.x, pos.y, pos.z)
+---
+lib.core_graphics.set_camera = core.graphics.set_camera
+
+--- core.graphics.world_to_screen(wx, wy, wz) -> sx, sy | nil
+--- Project a 3D world position to 2D screen coordinates.
+--- Returns nil if the point is behind the camera.
+--- Requires set_camera() to be called first.
+--- @param wx number  — world X
+--- @param wy number  — world Y
+--- @param wz number  — world Z
+--- @return number|nil  screen X
+--- @return number|nil  screen Y
+---
+--- Example:
+---   local sx, sy = core.graphics.world_to_screen(100, 5, 200)
+---   if sx then
+---       core.graphics.text_2d(sx, sy, "Marker!", 0xFF0000)
+---   end
+---
+lib.core_graphics.world_to_screen = core.graphics.world_to_screen
+
+-- ── 2D Primitives (screen pixel coordinates) ────────────────────────────────
 
 --- core.graphics.text_2d(x, y, text, [color])
 --- Draw text at a screen position.
@@ -1331,6 +1408,172 @@ lib.core_graphics.rect_2d = core.graphics.rect_2d
 --- @param color   integer  [opt] — hex color
 --- @param filled  boolean  [opt] — true for filled
 lib.core_graphics.circle_2d = core.graphics.circle_2d
+
+-- ── 3D Primitives (world coordinates, auto-projected via set_camera) ────────
+--
+-- These draw in the game world. Coordinates are world-space (same as
+-- player.get_position()). The projection is handled automatically
+-- using the camera set by set_camera().
+
+--- core.graphics.text_3d(wx, wy, wz, text, [color])
+--- Draw text at a 3D world position (auto-projected to screen).
+--- @param wx    number   — world X
+--- @param wy    number   — world Y
+--- @param wz    number   — world Z
+--- @param text  string
+--- @param color integer  [opt] — hex color, default white
+---
+--- Example:
+---   -- Label an enemy's position in the world
+---   core.graphics.text_3d(enemy.x, enemy.y + 2, enemy.z, enemy.name, 0xFF4444)
+---
+lib.core_graphics.text_3d = core.graphics.text_3d
+
+--- core.graphics.line_3d(x1, y1, z1, x2, y2, z2, [color], [thickness])
+--- Draw a line between two 3D world points.
+--- @param x1, y1, z1  number  — start point (world coords)
+--- @param x2, y2, z2  number  — end point (world coords)
+--- @param color        integer [opt] — hex color
+--- @param thickness    number  [opt] — default 1.0
+---
+--- Example:
+---   -- Draw a line from player to target
+---   local pos = core.player.get_position()
+---   local tgt = target_pos
+---   core.graphics.line_3d(pos.x, pos.y, pos.z, tgt.x, tgt.y, tgt.z, 0xFF0000, 2)
+---
+lib.core_graphics.line_3d = core.graphics.line_3d
+
+--- core.graphics.circle_3d(wx, wy, wz, radius, [color], [segments], [thickness])
+--- Draw a circle on the XZ plane at a 3D world position.
+--- The circle lies flat on the ground (horizontal, Y is constant).
+--- @param wx, wy, wz  number  — center world position
+--- @param radius       number  — radius in world units
+--- @param color        integer [opt] — hex color
+--- @param segments     integer [opt] — number of line segments (default 24)
+--- @param thickness    number  [opt] — line thickness, default 1.0
+---
+--- Example:
+---   -- Draw a 5-unit radius circle at the player's feet
+---   local pos = core.player.get_position()
+---   core.graphics.circle_3d(pos.x, pos.y, pos.z, 5.0, 0x00FF00, 32, 2.0)
+---
+lib.core_graphics.circle_3d = core.graphics.circle_3d
+
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║  SECTION 19b — core.draw.*  (In-Game Drawing — Unity Objects)          ║
+-- ║                                                                        ║
+-- ║  Creates actual Unity GameObjects in the game world.                   ║
+-- ║  LineRenderer-based (line, circle) and MeshRenderer-based (ground_*).  ║
+-- ║  Ground telegraphs produce filled, semi-transparent shapes on the      ║
+-- ║  ground — the same style as boss AoE indicators and entity rings.      ║
+-- ║                                                                        ║
+-- ║  Coordinates are Unity world space. Call from on_update (not render).  ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
+lib.core_draw = {}
+
+--- core.draw.ground_init() -> boolean
+--- Initialize the ground telegraph system.  Called automatically on first use.
+--- @return boolean  — true if the system initialized successfully
+lib.core_draw.ground_init = core.draw.ground_init
+
+--- core.draw.ground_status() -> string
+--- Returns a diagnostic string with internal state for debugging.
+lib.core_draw.ground_status = core.draw.ground_status
+
+--- core.draw.ground_circle(slot, cx, cy, cz, radius, [r], [g], [b], [a], [segments])
+--- Draw a filled circle flat on the ground at the given world position.
+--- Produces a solid disc like the Spirit Wolf's selection ring.
+--- @param slot     integer  — slot index (0–31), reuse a slot to move/update it
+--- @param cx       number   — world X
+--- @param cy       number   — world Y (Unity Y = vertical)
+--- @param cz       number   — world Z
+--- @param radius   number   — circle radius in world units
+--- @param r        number   — [opt] red   (0–1), default 0
+--- @param g        number   — [opt] green (0–1), default 1
+--- @param b        number   — [opt] blue  (0–1), default 1
+--- @param a        number   — [opt] alpha (0–1), default 0.4
+--- @param segments integer  — [opt] mesh resolution, default 32
+--- @return boolean
+---
+--- Example:
+---   core.draw.ground_circle(0, px, py, pz, 3.0, 0.1, 0.9, 0.2, 0.4)
+---
+lib.core_draw.ground_circle = core.draw.ground_circle
+
+--- core.draw.ground_cone(slot, cx, cy, cz, radius, yaw, angle, [r], [g], [b], [a], [segments])
+--- Draw a filled cone/wedge flat on the ground, like a directional AoE telegraph.
+--- The cone apex is at (cx,cy,cz), expanding outward to `radius`.
+--- @param slot     integer  — slot index (0–31)
+--- @param cx       number   — apex world X
+--- @param cy       number   — apex world Y (Unity Y = vertical)
+--- @param cz       number   — apex world Z
+--- @param radius   number   — cone length / reach in world units
+--- @param yaw      number   — direction in degrees (Unity Y-axis rotation)
+--- @param angle    number   — cone spread in degrees (e.g. 60 for a 60° wedge)
+--- @param r        number   — [opt] red   (0–1), default 0
+--- @param g        number   — [opt] green (0–1), default 1
+--- @param b        number   — [opt] blue  (0–1), default 1
+--- @param a        number   — [opt] alpha (0–1), default 0.4
+--- @param segments integer  — [opt] arc resolution, default 16
+--- @return boolean
+---
+--- Example:
+---   -- Cone in look direction
+---   core.draw.ground_cone(1, px, py, pz, 10, look_yaw, 60, 0.9, 0.2, 0.1, 0.35)
+---
+lib.core_draw.ground_cone = core.draw.ground_cone
+
+--- core.draw.ground_hide(slot)
+--- Hide a ground telegraph slot (keeps the object for reuse).
+--- @param slot integer
+lib.core_draw.ground_hide = core.draw.ground_hide
+
+--- core.draw.ground_clear()
+--- Hide all ground telegraph slots.
+lib.core_draw.ground_clear = core.draw.ground_clear
+
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║  SECTION 19c — core.telegraphs.*  (AoE Telegraph Detection)            ║
+-- ║                                                                        ║
+-- ║  Scans nearby entities for active spell casts and reads their           ║
+-- ║  HitboxDisplay data (radius, shape type) from game memory.             ║
+-- ║  Use with core.draw.ground_* to visualize telegraphs with timers.      ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
+lib.core_telegraphs = {}
+
+--- core.telegraphs.scan() -> table
+--- Scan all nearby entities for active spell casts / telegraphs.
+--- Returns a list of tables, one per actively casting entity:
+---   { uid       = integer,  -- entity UID
+---     name      = string,   -- entity display name
+---     x, y, z   = number,   -- entity world position (game coords)
+---     dir       = integer,  -- entity facing direction
+---     spell     = string,   -- spell name being cast
+---     duration  = number,   -- total cast duration (seconds)
+---     elapsed   = number,   -- time already elapsed
+---     remaining = number,   -- time remaining (duration - elapsed)
+---     ptype     = integer,  -- ProgressInfo type enum
+---     radius    = number,   -- HitboxDisplay outer radius
+---     mid_radius = number,  -- HitboxDisplay mid radius
+---     inner_radius = number,-- HitboxDisplay inner radius
+---     htype     = integer,  -- HitboxDisplay.Type enum (shape)
+---     off_x     = number,   -- pattern offset X
+---     off_z     = number,   -- pattern offset Z
+---   }
+--- Returns empty table if no entities are casting.
+---
+--- Example:
+---   local telegraphs = core.telegraphs.scan()
+---   for _, t in ipairs(telegraphs) do
+---     ethy.print(t.name .. " casting " .. t.spell .. " (" .. t.remaining .. "s)")
+---   end
+---
+lib.core_telegraphs.scan = core.telegraphs.scan
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
@@ -1840,7 +2083,9 @@ lib.summary = {
     ["core.entities"]           = 9,   -- nearby_all, nearby_living, scene_all, scene_scan, use_by_ptr, target_by_ptr, ...
     ["core.debug"]              = 21,  -- invoke_method, read_field, write_field, dump_class, ...
     ["core.menu"]               = 8,   -- checkbox, slider_int, slider_float, combobox, ...
-    ["core.graphics"]           = 4,   -- text_2d, line_2d, rect_2d, circle_2d
+    ["core.graphics"]           = 11,  -- color, screen_size, set_camera, world_to_screen, text_2d, line_2d, rect_2d, circle_2d, text_3d, line_3d, circle_3d
+    ["core.draw"]               = 11,  -- init, line, circle, hide, clear, ground_init, ground_status, ground_circle, ground_cone, ground_hide, ground_clear
+    ["core.telegraphs"]         = 1,   -- scan
     ["core.network"]            = 2,   -- server_address, net_classes
     ["core.floor"]              = 3,   -- debug, search, inspect
     ["game.raw"]                = 6,   -- player, spells, nearby, target, inventory, send
@@ -1849,7 +2094,7 @@ lib.summary = {
     ["GameObject methods"]      = 32,  -- get_name, get_hp, in_combat, cast_spell, distance_to, ...
     ["globals"]                 = 3,   -- print, is_stopped, _ethy_sleep
     -- ───────────────────────────────────────────────────────────────
-    -- TOTAL                    = 242
+    -- TOTAL                    = 249
 }
 
 return lib
