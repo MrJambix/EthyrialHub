@@ -7,7 +7,32 @@
 ╚══════════════════════════════════════════════════════════════╝
 ]]
 
+
+local function find_and_ensure_path(module)
+    local mod_path = module:gsub("%.", "/") .. ".lua"
+    for path in package.path:gmatch("[^;]+") do
+        local candidate = path:gsub("%?", module:gsub("%.", "/"))
+        local f = io.open(candidate, "r")
+        if f then
+            f:close()
+            return -- already findable, we're good
+        end
+    end
+    -- Not found in current path, try to locate it relative to cwd
+    local search_dirs = {"dist/scripts/", "scripts/", "lua/", ""}
+    for _, dir in ipairs(search_dirs) do
+        local f = io.open(dir .. mod_path, "r")
+        if f then
+            f:close()
+            package.path = dir .. "?.lua;" .. dir .. "?/init.lua;" .. package.path
+            return
+        end
+    end
+end
+
+find_and_ensure_path("common/ethy_sdk")
 local ethy = require("common/ethy_sdk")
+
 local ui = core.imgui
 
 ethy.print("=== Gather Loop loaded ===")
