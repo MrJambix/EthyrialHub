@@ -250,6 +250,59 @@ function ethy.menu.button(id, label)
 end
 
 -- ══════════════════════════════════════════════════════════════
+-- Loot Rolling (Need / Greed / Pass)
+-- ══════════════════════════════════════════════════════════════
+
+ethy.loot_roll = {}
+
+-- Detect whether the native core.loot_roll bindings exist (requires rebuilt C++).
+-- Falls back to core.send_command() if not available yet.
+local _has_native_lr = (type(core.loot_roll) == "table")
+
+local function _lr_send(cmd)
+    return core.send_command(cmd)
+end
+
+--- Scan for pending NeedGreed roll windows.
+--- Returns raw IPC string. "NONE" if nothing pending.
+function ethy.loot_roll.scan_raw()
+    if _has_native_lr then return core.loot_roll.scan() end
+    return _lr_send("NEED_GREED_SCAN")
+end
+
+--- Parse scan results into a Lua table.
+--- Each entry: { item, timer, remaining, ptr, qptr }
+function ethy.loot_roll.scan()
+    local raw = ethy.loot_roll.scan_raw()
+    if not raw or raw == "NONE" or raw:find("^NO_") then return {} end
+    local results = {}
+    for entry in raw:gmatch("[^#]+") do
+        entry = entry:match("^%s*(.-)%s*$")
+        if entry ~= "" and not entry:match("^count=") then
+            local t = {}
+            for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
+                t[k] = tonumber(v) or v
+            end
+            if t.item then results[#results + 1] = t end
+        end
+    end
+    return results
+end
+
+--- Send a choice (NEED, GREED, or PASS) for a specific roll window.
+--- ptr: the hex pointer string from scan results.
+function ethy.loot_roll.choose(ptr, choice)
+    if _has_native_lr then return core.loot_roll.choose(tostring(ptr), tostring(choice)) end
+    return _lr_send("NEED_GREED_CHOOSE " .. tostring(ptr) .. " " .. tostring(choice))
+end
+
+--- Convenience: greed on all pending rolls.
+function ethy.loot_roll.greed_all()
+    if _has_native_lr then return core.loot_roll.greed_all() end
+    return _lr_send("NEED_GREED_GREED_ALL")
+end
+
+-- ══════════════════════════════════════════════════════════════
 -- Humanization — makes bot behavior look natural to server-side
 -- detection. All timing functions return seconds.
 -- ══════════════════════════════════════════════════════════════

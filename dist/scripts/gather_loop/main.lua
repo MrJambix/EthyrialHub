@@ -1,17 +1,22 @@
 --[[
 ╔══════════════════════════════════════════════════════════════╗
-║           Gather Loop — Interactive Resource Farmer           ║
+║         Gather Loop — Interactive Resource Farmer            ║
 ║                                                              ║
-║  Opens its own window when you run it. Check the nodes you   ║
-║  want, hit Start, and it farms them by pointer.              ║
+║  Compact floating window.  Check the nodes you want,         ║
+║  press Start, and it farms them by pointer.                  ║
+║                                                              ║
+║  v2 — optimised for large maps (Irumensa):                   ║
+║    • Single merged SCENE_SCAN per tick (not 7 IPC calls)     ║
+║    • PLAYER_JOB polling for gather completion                ║
+║    • Distance pre-filter in C++ (skips far entities)         ║
+║    • Compact collapsible UI                                  ║
 ╚══════════════════════════════════════════════════════════════╝
 ]]
 
 local ethy = require("common/ethy_sdk")
 local ui = core.imgui
 
-ethy.print("=== Gather Loop loaded ===")
-ethy.print("  ImGui window mode — own floating window")
+ethy.print("=== Gather Loop v2 loaded ===")
 
 -- ═══════════════════════════════════════════════════════════════
 -- Node database — each gets a checkbox in the window
@@ -33,7 +38,6 @@ local NODES = {
     { name = "Regular Gem",       on = false, cat = "Ore"  },
     { name = "Brilliant Gem",     on = false, cat = "Ore"  },
 
-    -- Each entry matches all variants (e.g. "Acacia" → Acacia Tree, Aging Acacia, Ancient Acacia, Verdant Acacia)
     { name = "Dead Tree",         on = false, cat = "Tree" },
     { name = "Pine",              on = false, cat = "Tree" },
     { name = "Birch",             on = false, cat = "Tree" },
@@ -77,66 +81,42 @@ local NODES = {
 local CFG = {
     running     = false,
     max_range   = 40,
-    gather_wait = 12,
+    gather_wait = 20,      -- hard timeout (PLAYER_JOB usually detects completion sooner)
     rest_hp     = 50,
     humanize    = true,
 }
 
-local POLL_RATE     = 0.5
+local POLL_RATE     = 0.6      -- scan interval (raised from 0.5 — one scan is cheaper now)
 local POLL_JITTER   = 0.15
 local MOVE_HISTORY  = 4
 local MOVE_TIMEOUT  = 15
 local SKIP_DURATION = 30
 local COOLDOWN      = 1.5
+local JOB_POLL      = 0.35     -- how often to check PLAYER_JOB during gather
+local DEAD_TIMEOUT  = 120
+local RESPAWN_DELAY = 3.0
 
-local CAT_SCAN_CMDS = {
-    Ore  = { "SCENE_SCAN_ORES",  "NODE_SCAN_USABLE_ore"  },
-    Tree = { "SCENE_SCAN_TREES", "NODE_SCAN_USABLE_tree" },
-    Herb = { "SCENE_SCAN_HERBS", "NODE_SCAN_USABLE_herb" },
+-- Pick ONE scan command per category (SCENE_SCAN is faster than NODE_SCAN + merge)
+local CAT_SCAN_CMD = {
+    Ore  = "SCENE_SCAN_ORES",
+    Tree = "SCENE_SCAN_TREES",
+    Herb = "SCENE_SCAN_HERBS",
 }
 
-local STATE       = "idle"
-local status_msg  = "Configure nodes and press Start"
-local pos_history = {}
+local STATE        = "idle"
+local status_msg   = "Configure nodes and press Start"
+local pos_history  = {}
 local gather_start = 0
 local walk_start   = 0
 local cooldown_start = 0
 local dead_start   = 0
 local current_node = nil
 local last_tick    = 0
+local last_job_check = 0
 local show_window  = true
 
-local DEAD_TIMEOUT = 120
-local RESPAWN_DELAY = 3.0
-
-local stats = { gathered = 0, skipped = 0, attempts = 0, deaths = 0 }
+local stats     = { gathered = 0, skipped = 0, attempts = 0, deaths = 0, session_start = nil }
 local skip_list = {}
-local debug_cache = nil
-
--- #region agent log
-local DEBUG_LOG_PATH = "C:/Users/mrjam/OneDrive/Desktop/EthyrialInjector/debug-cbd804.log"
-local _dbg_run = 0
-local function _esc(s) if type(s)~="string" then return tostring(s) end return s:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\n','\\n'):gsub('\r','') end
-local function _dlog(hyp, loc, msg, kvs)
-    pcall(function()
-        local f = io.open(DEBUG_LOG_PATH, "a")
-        if not f then return end
-        local d = ""
-        if kvs then
-            local parts = {}
-            for k,v in pairs(kvs) do
-                if type(v) == "string" then parts[#parts+1] = '"'..k..'":"'.._esc(v)..'"'
-                elseif type(v) == "number" then parts[#parts+1] = '"'..k..'":'..v
-                elseif type(v) == "boolean" then parts[#parts+1] = '"'..k..'":'..(v and "true" or "false")
-                else parts[#parts+1] = '"'..k..'":"'.._esc(tostring(v))..'"' end
-            end
-            d = table.concat(parts, ",")
-        end
-        f:write('{"sessionId":"cbd804","runId":"run'.._dbg_run..'","hypothesisId":"'..hyp..'","location":"'.._esc(loc)..'","message":"'.._esc(msg)..'","data":{'..d..'},"timestamp":'..math.floor(ethy.now()*1000)..'}\n')
-        f:close()
-    end)
-end
--- #endregion
 
 -- ═══════════════════════════════════════════════════════════════
 -- Helpers
@@ -163,9 +143,7 @@ end
 
 local function skip_node(uid, ptr)
     local key = skip_key(uid, ptr)
-    if key then
-        skip_list[key] = ethy.now() + SKIP_DURATION
-    end
+    if key then skip_list[key] = ethy.now() + SKIP_DURATION end
 end
 
 local function norm_ptr(p)
@@ -209,10 +187,7 @@ local function parse_lines(raw)
             local t = {}
             for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
                 if k == "ptr" then t[k] = v
-                else
-                    local num = tonumber(v)
-                    t[k] = num ~= nil and num or v
-                end
+                else t[k] = tonumber(v) or v end
             end
             if next(t) then results[#results + 1] = t end
         end
@@ -236,86 +211,59 @@ local function get_enabled_categories()
     return cats
 end
 
-local stale_hp_count = 0
-local STALE_HP_THRESHOLD = 5  -- consecutive bad reads before declaring dead
-
 local function is_safe()
     local hp = core.player.hp()
-    if not hp or hp <= 0 then
-        -- Check if this is a stale pipe read vs actual death.
-        -- If max_hp is also 0/nil, the pipe is returning garbage — not a real death.
-        local max_hp = core.player.max_hp()
-        if not max_hp or max_hp <= 0 then
-            stale_hp_count = stale_hp_count + 1
-            if stale_hp_count >= STALE_HP_THRESHOLD then
-                return false, string.format("Dead (hp=%s, stale=%d)", tostring(hp), stale_hp_count)
-            end
-            return false, string.format("Stale HP read (%d/%d) — retrying", stale_hp_count, STALE_HP_THRESHOLD)
-        end
-        -- max_hp is valid but hp is 0 — genuinely dead
-        stale_hp_count = 0
-        return false, string.format("Dead (hp=%s)", tostring(hp))
-    end
-    stale_hp_count = 0
+    if not hp or hp < 0 then return false, "Waiting for player data" end
+    if hp == 0 then return false, string.format("Dead (hp=%.0f)", hp) end
     if core.player.combat() then return false, "In combat" end
     if core.player.frozen() then return false, "Frozen" end
     if hp < CFG.rest_hp then return false, string.format("Low HP (%.0f%%)", hp) end
     return true, nil
 end
 
+--- Check if player is currently in a gathering job (progress bar active).
+local function is_gathering_job()
+    local raw = core.send_command("PLAYER_JOB")
+    if not raw or raw == "" or raw == "NONE" or raw == "none" then return false end
+    return true
+end
+
+--- Scan once per tick — only the categories that have enabled nodes.
+--- Returns a filtered, distance-sorted list of matching nodes.
 local function scan_matching()
     local enabled = get_enabled_names()
-    if #enabled == 0 then return {} end
+    if #enabled == 0 then return {}, 0 end
 
     local cats = get_enabled_categories()
-
-    -- Merge scan results from multiple commands, dedup by pointer
     local by_ptr = {}
-    local no_ptr = {}
+    local scan_errors = 0
 
-    local function merge_raw(raw)
-        for _, node in ipairs(parse_lines(raw or "")) do
-            local pk = norm_ptr(node.ptr)
-            if pk then
-                local existing = by_ptr[pk]
-                if not existing then
-                    by_ptr[pk] = node
-                else
-                    if node.usable ~= nil and existing.usable == nil then
-                        existing.usable = node.usable
-                    end
-                    if node.hidden ~= nil and existing.hidden == nil then
-                        existing.hidden = node.hidden
-                    end
-                    if node.dist and (not existing.dist or node.dist < existing.dist) then
-                        existing.dist = node.dist
+    for cat, _ in pairs(cats) do
+        local cmd = CAT_SCAN_CMD[cat]
+        if cmd then
+            local raw = core.send_command(cmd)
+            if not raw or raw == "" then
+                -- skip
+            elseif raw:find("^SEH_EXCEPTION") or raw:find("^CPP_EXCEPTION")
+                or raw:find("^MAIN_THREAD_TIMEOUT") or raw:find("^IL2CPP_NOT_AVAILABLE")
+                or raw:find("^NO_PLAYER") or raw:find("^NO_ENTITY_MANAGER") then
+                scan_errors = scan_errors + 1
+                log("Scan error (%s): %s", cmd, raw:sub(1, 80))
+            else
+                for _, node in ipairs(parse_lines(raw)) do
+                    local pk = norm_ptr(node.ptr)
+                    if pk and not by_ptr[pk] then
+                        by_ptr[pk] = node
                     end
                 end
-            else
-                no_ptr[#no_ptr + 1] = node
             end
         end
     end
 
-    -- Type-specific scans for each enabled category
-    for cat, _ in pairs(cats) do
-        local cmds = CAT_SCAN_CMDS[cat]
-        if cmds then
-            for _, cmd in ipairs(cmds) do
-                merge_raw(core.send_command(cmd))
-            end
-        end
-    end
-
-    -- Generic NODE_SCAN as fallback
-    merge_raw(core.send_command("NODE_SCAN"))
-
-    -- Filter merged results
+    -- Filter: name match, range, skip list
     local matched = {}
-
-    local function try_match(node)
+    for _, node in pairs(by_ptr) do
         local hidden = (node.hidden == nil) and 0 or node.hidden
-        -- Skip hidden nodes but ignore usable flag (unreliable for some node types)
         if hidden == 0
             and (node.dist or 999) <= CFG.max_range
             and not is_skipped(node.uid, node.ptr) then
@@ -328,15 +276,12 @@ local function scan_matching()
         end
     end
 
-    for _, node in pairs(by_ptr) do try_match(node) end
-    for _, node in ipairs(no_ptr) do try_match(node) end
-
     table.sort(matched, function(a, b) return (a.dist or 999) < (b.dist or 999) end)
-    return matched
+    return matched, scan_errors
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- Gather state machine (runs in on_update)
+-- Gather state machine
 -- ═══════════════════════════════════════════════════════════════
 
 local function gather_tick()
@@ -350,6 +295,8 @@ local function gather_tick()
         status_msg = "Stopped"
         return
     end
+
+    if not stats.session_start then stats.session_start = now end
 
     if CFG.humanize then
         local action, duration = ethy.human.session.check()
@@ -370,7 +317,7 @@ local function gather_tick()
         return
     end
 
-    -- Handle dead state: wait for respawn, then resume
+    -- Dead state
     if STATE == "dead" then
         local hp = core.player.hp()
         local elapsed = now - dead_start
@@ -380,29 +327,27 @@ local function gather_tick()
             _ethy_sleep(RESPAWN_DELAY)
             STATE = "idle"
         elseif elapsed > DEAD_TIMEOUT then
-            log("Respawn timeout (%.0fs). Stopping.", DEAD_TIMEOUT)
+            log("Respawn timeout. Stopping.")
             status_msg = "Respawn timeout — stopped"
             CFG.running = false
             STATE = "idle"
         else
-            status_msg = string.format("Dead — waiting for respawn (%.0fs)", elapsed)
+            status_msg = string.format("Dead — waiting (%.0fs)", elapsed)
         end
         return
     end
 
     local safe, reason = is_safe()
     if not safe then
-        if reason:find("^Stale") then
-            -- Pipe returned bad data — skip this tick and retry next cycle
+        if reason:find("^Waiting") then
             status_msg = reason
             return
         end
         if reason:find("^Dead") then
             stats.deaths = stats.deaths + 1
-            log("Died! (Deaths: %d) Waiting for respawn...", stats.deaths)
             dead_start = now
             STATE = "dead"
-            status_msg = "Dead — waiting for respawn (0s)"
+            status_msg = "Dead — waiting for respawn"
             return
         end
         status_msg = reason .. " — paused"
@@ -410,21 +355,16 @@ local function gather_tick()
         return
     end
 
+    -- ── IDLE: scan for nodes ──
     if STATE == "idle" then
-        local nodes = scan_matching()
+        local nodes, errs = scan_matching()
         if #nodes == 0 then
-            status_msg = string.format("Scanning... (0/%d types)", #enabled)
+            status_msg = errs > 0
+                and string.format("Scan errors (%d) — retrying...", errs)
+                or  string.format("Scanning... (0/%d types)", #enabled)
             return
         end
         local node = nodes[1]
-        -- #region agent log
-        local _sc = 0; for _ in pairs(skip_list) do _sc = _sc + 1 end
-        _dlog("H1C", "gather_tick:idle", "selected_node", {
-            name=node.name or "?", dist=node.dist or -1, uid=node.uid or 0,
-            ptr=node.ptr or "nil", usable=node.usable or -1, hidden=node.hidden or -1,
-            total_matched=#nodes, skip_list_size=_sc
-        })
-        -- #endregion
         stats.attempts = stats.attempts + 1
         status_msg = string.format("Using %s (%.0fm)", node.name or "?", node.dist or 0)
 
@@ -435,9 +375,6 @@ local function gather_tick()
             r = core.send_command("USE_ENTITY_" .. (node.name or "")) or ""
         end
 
-        -- #region agent log
-        _dlog("H1A", "gather_tick:use", "gather_response", {response=r:sub(1,200), ptr=node.ptr or "nil", name=node.name or "?"})
-        -- #endregion
         if r:find("OK") or r:find("USED") or r:find("GATHER") then
             current_node = node
             pos_history = {}
@@ -450,6 +387,7 @@ local function gather_tick()
         return
     end
 
+    -- ── WALKING: monitor position convergence ──
     if STATE == "walking" then
         local x, y = get_pos()
         if x then
@@ -460,14 +398,15 @@ local function gather_tick()
                 local dx, dy = x - nx, y - ny
                 local arrive_dist = math.sqrt(dx * dx + dy * dy)
                 if arrive_dist > 6 then
-                    log("Unreachable: %s (%.1fm away), skipping", current_node.name or "?", arrive_dist)
+                    log("Unreachable: %s (%.1fm), skipping", current_node.name or "?", arrive_dist)
                     skip_node(current_node.uid, current_node.ptr)
                     stats.skipped = stats.skipped + 1
                     STATE = "idle"
                     return
                 end
-                log("Arrived at %s (%.1f, %.1f)", current_node.name or "?", x, y)
+                log("Arrived at %s", current_node.name or "?")
                 gather_start = now
+                last_job_check = 0
                 STATE = "gathering"
                 return
             end
@@ -482,28 +421,38 @@ local function gather_tick()
         return
     end
 
+    -- ── GATHERING: use PLAYER_JOB to detect completion, hard timeout as safety ──
     if STATE == "gathering" then
         local elapsed = now - gather_start
+
+        -- Poll PLAYER_JOB at JOB_POLL interval (not every tick)
+        if now - last_job_check >= JOB_POLL then
+            last_job_check = now
+            if elapsed > 2.0 and not is_gathering_job() then
+                -- Job cleared = gather complete (or interrupted)
+                log("Done (job cleared): %s @ %.1fs", current_node.name or "?", elapsed)
+                stats.gathered = stats.gathered + 1
+                skip_node(current_node.uid, current_node.ptr)
+                cooldown_start = now
+                STATE = "cooldown"
+                return
+            end
+        end
+
+        -- Hard timeout safety net
         local left = CFG.gather_wait - elapsed
         status_msg = string.format("Gathering %s (%.0fs)", current_node.name or "?", math.max(0, left))
         if elapsed >= CFG.gather_wait then
-            log("Done: %s", current_node.name or "?")
+            log("Done (timeout): %s", current_node.name or "?")
             stats.gathered = stats.gathered + 1
             skip_node(current_node.uid, current_node.ptr)
-            -- #region agent log
-            local _sk = skip_key(current_node.uid, current_node.ptr)
-            _dlog("H1C", "gather_tick:done", "gathered_and_skipped", {
-                name=current_node.name or "?", skip_key=_sk or "nil",
-                skip_expires=skip_list[_sk] or 0, now=ethy.now(),
-                uid=current_node.uid or 0, ptr=current_node.ptr or "nil"
-            })
-            -- #endregion
             cooldown_start = now
             STATE = "cooldown"
         end
         return
     end
 
+    -- ── COOLDOWN: brief pause between gathers ──
     if STATE == "cooldown" then
         if now - cooldown_start >= COOLDOWN then
             STATE = "idle"
@@ -515,14 +464,17 @@ local function gather_tick()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- Render: ImGui floating window
+-- Compact ImGui window
 -- ═══════════════════════════════════════════════════════════════
 
-local function render_imgui_window()
+local show_nodes    = true   -- collapsible node list
+local show_debug    = false  -- collapsible debug section
+
+local function render_window()
     if not show_window then return end
 
-    ui.set_next_window_size(320, 520)
-    ui.set_next_window_pos(20, 100)
+    ui.set_next_window_size(280, 380)
+    ui.set_next_window_pos(10, 80)
     local visible, open = ui.begin_window("Gather Loop")
 
     if not open then
@@ -532,188 +484,71 @@ local function render_imgui_window()
         return
     end
 
-    if visible then
-        if CFG.running then
-            ui.text_colored(0.3, 1.0, 0.3, "● RUNNING")
-        else
-            ui.text_colored(0.6, 0.6, 0.6, "○ STOPPED")
-        end
-        ui.same_line()
-        ui.text("  " .. status_msg)
-        ui.separator()
+    if not visible then ui.end_window(); return end
 
-        if CFG.running then
-            if ui.button("■  Stop") then
-                CFG.running = false
-                STATE = "idle"
-                log("Stopped")
-            end
-        else
-            if ui.button("▶  Start") then
-                CFG.running = true
-                log("Started")
-            end
-        end
-        ui.same_line()
-        ui.text(string.format("  Gathered: %d  Skipped: %d  Deaths: %d", stats.gathered, stats.skipped, stats.deaths))
-        ui.separator()
+    -- ── Status line ──
+    if CFG.running then
+        ui.text_colored(0.3, 1.0, 0.3, "RUN")
+    else
+        ui.text_colored(0.6, 0.6, 0.6, "OFF")
+    end
+    ui.same_line()
+    ui.text(status_msg)
 
-        CFG.max_range   = ui.slider_int("Range (m)",       CFG.max_range,   5, 80)
-        CFG.gather_wait = ui.slider_int("Gather Wait (s)", CFG.gather_wait, 5, 25)
-        CFG.rest_hp     = ui.slider_int("Rest HP %",       CFG.rest_hp,    10, 90)
+    -- ── Controls row ──
+    if CFG.running then
+        if ui.button("Stop##gl") then CFG.running = false; STATE = "idle"; log("Stopped") end
+    else
+        if ui.button("Start##gl") then CFG.running = true; log("Started") end
+    end
+    ui.same_line()
+    local elapsed = stats.session_start and (ethy.now() - stats.session_start) or 0
+    ui.text(string.format("G:%d  S:%d  D:%d  %.0fs",
+        stats.gathered, stats.skipped, stats.deaths, elapsed))
+    ui.separator()
 
-        if ui.button("Scan Nodes") then
-            local all_nodes = {}
-            local seen_ptr = {}
-            local function add_from(cmd)
-                for _, n in ipairs(parse_lines(core.send_command(cmd) or "")) do
-                    local pk = norm_ptr(n.ptr)
-                    if not pk or not seen_ptr[pk] then
-                        if pk then seen_ptr[pk] = true end
-                        all_nodes[#all_nodes + 1] = n
-                    end
-                end
-            end
-            for _, cmds in pairs(CAT_SCAN_CMDS) do
-                for _, cmd in ipairs(cmds) do add_from(cmd) end
-            end
-            add_from("NODE_SCAN")
-            log("=== MULTI SCAN: %d nodes ===", #all_nodes)
-            for _, n in ipairs(all_nodes) do
-                log("  [%s] class=%s dist=%.1f usable=%s ptr=%s",
-                    tostring(n.name or "?"), tostring(n.class or "?"),
-                    n.dist or 0, tostring(n.usable), tostring(n.ptr or "?"))
-            end
-        end
-        ui.same_line()
-        if ui.button("Dump Raw") then
-            local raw = core.send_command("NODE_SCAN") or "NONE"
-            log("=== RAW NODE_SCAN (len=%d) ===", #raw)
-            local chunk_size = 200
-            for i = 1, #raw, chunk_size do
-                log("  [%d] %s", i, raw:sub(i, i + chunk_size - 1))
-            end
-        end
-        ui.same_line()
-        if ui.button("Discover Names") then
-            local all = {}
-            local seen_ptr = {}
-            local function add_from(cmd)
-                for _, n in ipairs(parse_lines(core.send_command(cmd) or "")) do
-                    local pk = norm_ptr(n.ptr)
-                    if not pk or not seen_ptr[pk] then
-                        if pk then seen_ptr[pk] = true end
-                        all[#all + 1] = n
-                    end
-                end
-            end
-            for _, cmds in pairs(CAT_SCAN_CMDS) do
-                for _, cmd in ipairs(cmds) do add_from(cmd) end
-            end
-            add_from("NODE_SCAN")
-            local known_lower = {}
-            for _, n in ipairs(NODES) do
-                known_lower[n.name:lower()] = true
-            end
-            log("=== DISCOVER: %d nodes nearby ===", #all)
-            local seen = {}
-            for _, n in ipairs(all) do
-                local nm = n.name or "?"
-                local disp = n.disp or nm
-                local key = nm:lower()
-                if not seen[key] then
-                    seen[key] = true
-                    local matched = false
-                    for _, entry in ipairs(NODES) do
-                        if name_matches(nm, entry.name) then
-                            matched = true
-                            break
-                        end
-                    end
-                    local tag = matched and "[OK]" or "[NEW]"
-                    log("  %s  name=\"%s\"  disp=\"%s\"  dist=%.0f  usable=%s  class=%s",
-                        tag, nm, disp, n.dist or 0, tostring(n.usable), tostring(n.class or n.cls or "?"))
-                end
-            end
-            log("=== Walk near trees/ores/herbs and press again to discover more ===")
-        end
-        ui.separator()
+    -- ── Settings (always visible, compact) ──
+    CFG.max_range   = ui.slider_int("Range##gl",  CFG.max_range,   5, 80)
+    CFG.gather_wait = ui.slider_int("Timeout##gl", CFG.gather_wait, 5, 30)
+    CFG.rest_hp     = ui.slider_int("Rest HP##gl", CFG.rest_hp,    10, 90)
+    ui.separator()
 
-        -- Debug panel (cached, only updates on button click to avoid pipe spam)
-        ui.text_colored(0.5, 0.8, 1.0, "── Debug ──")
-        ui.text(string.format("  State: %s  Enabled: %d", STATE, #get_enabled_names()))
-        if debug_cache then
-            ui.text(string.format("  HP: %s  MP: %s  MaxHP: %s", debug_cache.hp, debug_cache.mp, debug_cache.maxhp))
-            ui.text(string.format("  Combat: %s  Frozen: %s", debug_cache.combat, debug_cache.frozen))
-            ui.text(string.format("  Pos: %s", debug_cache.pos))
-            ui.text(string.format("  PLAYER_ALL: %s", (debug_cache.all or ""):sub(1, 120)))
-        end
-
-        if ui.button("Debug Dump") then
-            log("=== DEBUG DUMP ===")
-            local cmds = {
-                {"PLAYER_HP",     "hp"},
-                {"PLAYER_MP",     "mp"},
-                {"PLAYER_MAX_HP", "maxhp"},
-                {"PLAYER_COMBAT", "combat"},
-                {"PLAYER_FROZEN", "frozen"},
-                {"PLAYER_POS",    "pos"},
-                {"PLAYER_ALL",    "all"},
-            }
-            debug_cache = {}
-            for _, c in ipairs(cmds) do
-                local r = core.send_command(c[1]) or "nil"
-                debug_cache[c[2]] = r
-                log("  %s = \"%s\"", c[1], r:sub(1, 200))
-            end
-            log("  core.player.hp()      = %s", tostring(core.player.hp()))
-            log("  core.player.combat()  = %s", tostring(core.player.combat()))
-            log("  core.player.frozen()  = %s", tostring(core.player.frozen()))
-            local safe, reason = is_safe()
-            log("  is_safe() = %s  reason = %s", tostring(safe), tostring(reason))
-            log("  STATE = %s  running = %s", STATE, tostring(CFG.running))
-            log("  Enabled nodes: %d", #get_enabled_names())
-        end
-        -- #region agent log
-        ui.text_colored(0.5, 1.0, 0.5, "── Debug Session cbd804 ──")
-        if ui.button("Test Targeting") then
-            _dbg_run = _dbg_run + 1
-            local cmds = {"SCAN_ENEMIES", "TARGET_NEAREST", "TARGET_INFO", "HAS_TARGET", "TARGET_NAME", "SCAN_NEARBY"}
-            for _, c in ipairs(cmds) do
-                local r = core.send_command(c) or "nil"
-                _dlog("H2ALL", "test_targeting", c, {response=r:sub(1, 500), len=#r})
-                log("  %s => %s", c, r:sub(1, 200))
-            end
-            log("Targeting diagnostics logged to debug file (run %d)", _dbg_run)
-        end
-        ui.same_line()
-        if ui.button("Test Nodes") then
-            _dbg_run = _dbg_run + 1
-            local raw = core.send_command("NODE_SCAN") or "NONE"
-            local all = parse_lines(raw)
-            _dlog("H1ALL", "test_nodes", "manual_scan", {total=#all, raw_len=#raw})
-            for i, n in ipairs(all) do
-                if i <= 20 then
-                    _dlog("H1ALL", "test_nodes", "node_detail", {
-                        idx=i, name=n.name or "?", usable=n.usable or -1, hidden=n.hidden or -1,
-                        dist=n.dist or -1, uid=n.uid or 0, ptr=n.ptr or "nil", class=n.class or "?"
-                    })
-                end
-            end
-            log("Logged %d nodes to debug file (run %d)", #all, _dbg_run)
-        end
-        -- #endregion
-        ui.separator()
-
+    -- ── Node checkboxes (toggle section) ──
+    show_nodes = ui.checkbox("Show Nodes##gl", show_nodes)
+    ui.same_line()
+    ui.text(string.format("(%d selected)", #get_enabled_names()))
+    if show_nodes then
         local last_cat = ""
         for _, n in ipairs(NODES) do
             if n.cat ~= last_cat then
-                ui.spacing()
-                ui.text_colored(1.0, 0.8, 0.2, "── " .. n.cat .. " ──")
+                ui.text_colored(1.0, 0.8, 0.2, n.cat)
                 last_cat = n.cat
             end
-            n.on = ui.checkbox(n.name, n.on)
+            n.on = ui.checkbox(n.name .. "##gl", n.on)
         end
+    end
+    ui.separator()
+
+    -- ── Debug ──
+    ui.text(string.format("State: %s", STATE))
+    if ui.button("Scan Now##gl") then
+        local cats = get_enabled_categories()
+        local total = 0
+        for cat, _ in pairs(cats) do
+            local cmd = CAT_SCAN_CMD[cat]
+            if cmd then
+                local raw = core.send_command(cmd) or "NONE"
+                local nodes = parse_lines(raw)
+                log("[%s] %d nodes (raw %d bytes)", cmd, #nodes, #raw)
+                total = total + #nodes
+            end
+        end
+        log("Total: %d nodes across enabled categories", total)
+    end
+    ui.same_line()
+    if ui.button("Clear Skips##gl") then
+        skip_list = {}
+        log("Skip list cleared")
     end
 
     ui.end_window()
@@ -723,13 +558,12 @@ end
 -- Callbacks
 -- ═══════════════════════════════════════════════════════════════
 
-ethy.on_update(function()
-    gather_tick()
+ethy.on_update(function() gather_tick() end)
+ethy.on_render(function() render_window() end)
+
+-- Menu toggle to re-open window
+ethy.on_render_menu(function()
+    show_window = core.menu.checkbox("gl_show", "Gather Loop", show_window)
 end)
 
-ethy.on_render(function()
-    render_imgui_window()
-end)
-
-ethy.print("Gather Loop ready.")
-ethy.print("  Window should be visible on screen.")
+ethy.print("Gather Loop v2 ready.")

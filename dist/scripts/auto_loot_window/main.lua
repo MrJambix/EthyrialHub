@@ -185,12 +185,9 @@ local function render_window()
     if items_dirty then rebuild_sorted() end
 
     local item_count = #items_sorted
-    local base_height = 280
-    local item_height = math.min(item_count, 15) * 18
-    local win_h = base_height + item_height
 
-    ui.set_next_window_size(300, win_h)
-    ui.set_next_window_pos(20, 20)
+    ui.set_next_window_size(260, 300)
+    ui.set_next_window_pos(10, 10)
     local visible, open = ui.begin_window("Loot Window")
 
     if not open then
@@ -205,55 +202,29 @@ local function render_window()
         local gained  = start_gold and (current_gold - start_gold) or 0
         if gained < 0 then gained = 0 end
 
-        local g, s, c = split_currency(gained)
+        local per_hour = (elapsed > 10) and (gained / elapsed * 3600) or 0
 
-        local per_hour = 0
-        if elapsed > 10 then
-            per_hour = gained / elapsed * 3600
-        end
-
-        ui.text_colored(1.0, 0.85, 0.0, "-- Currency Gained --")
-        ui.spacing()
-
-        ui.text_colored(1.0, 0.84, 0.0,  string.format("  Gold:    %d", g))
-        ui.text_colored(0.75, 0.75, 0.75, string.format("  Silver:  %d", s))
-        ui.text_colored(0.72, 0.45, 0.20, string.format("  Copper:  %d", c))
-
-        ui.spacing()
-        ui.text(string.format("Total:  %s", format_currency(gained)))
-        ui.text(string.format("Rate:   %s / hr", format_currency(per_hour)))
-        ui.text(string.format("Time:   %s", format_time(elapsed)))
-
-        ui.spacing()
+        -- Compact summary line
+        ui.text_colored(1.0, 0.85, 0.0, format_currency(gained))
+        ui.same_line()
+        ui.text(string.format("(%s/hr)  %s", format_currency(per_hour), format_time(elapsed)))
+        ui.text(string.format("Windows: %d  Items: %d", stats.windows, stats.looted))
         ui.separator()
-        ui.spacing()
 
-        ui.text_colored(0.5, 0.8, 1.0,
-            string.format("-- Items Gained (%d) --", item_count))
-        ui.spacing()
-
-        if item_count == 0 then
-            ui.text_colored(0.5, 0.5, 0.5, "  (nothing yet)")
-        else
+        -- Items
+        ui.text_colored(0.7, 0.9, 1.0, string.format("Items (%d)", item_count))
+        if item_count > 0 then
             for i, entry in ipairs(items_sorted) do
                 if i > 15 then
                     ui.text_colored(0.5, 0.5, 0.5,
-                        string.format("  ... and %d more", item_count - 15))
+                        string.format("  +%d more", item_count - 15))
                     break
                 end
-                ui.text(string.format("  x%-4d %s", entry.qty, entry.name))
+                ui.text(string.format("  x%-3d %s", entry.qty, entry.name))
             end
         end
 
-        ui.spacing()
-        ui.separator()
-        ui.spacing()
-
-        ui.text(string.format("Loot windows: %d  |  Items: %d",
-            stats.windows, stats.looted))
-
-        ui.spacing()
-        if ui.button("Reset##lootwin") then
+        if ui.button("Reset##lw") then
             start_gold    = current_gold
             start_time    = ethy.now()
             stats.looted  = 0

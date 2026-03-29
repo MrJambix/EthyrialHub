@@ -1,1 +1,0 @@
-# EthyTool combat builds — drop <classname>.py files here
