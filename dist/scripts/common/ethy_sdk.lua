@@ -396,4 +396,25 @@ function ethy.human.session.elapsed()
     return ethy.now() - ethy.human.session._start_time
 end
 
+-- ══════════════════════════════════════════════════════════════
+-- Drawing API helpers
+-- ══════════════════════════════════════════════════════════════
+
+-- Ground telegraph shapes (filled mesh on ground plane):
+--   core.draw.ground_circle(slot, cx,cy,cz, radius, r,g,b,a, segments)
+--   core.draw.ground_cone(slot, cx,cy,cz, radius, yaw, angle, r,g,b,a, segments)
+--   core.draw.ground_line(slot, x1,y1,z1, x2,y2,z2, width, r,g,b,a)
+--   core.draw.ground_donut(slot, cx,cy,cz, innerR, outerR, r,g,b,a, segments)
+--   core.draw.ground_hide(slot)
+--   core.draw.ground_clear()
+--
+-- Telegraph scan (returns table of entries with extended data):
+--   core.telegraphs.scan() -> { { uid, name, x,y,z, dir, spell, duration, elapsed, remaining,
+--       ptype, radius, mid_radius, inner_radius, htype, off_x, off_z,
+--       rank, spell_range, cast_time, channel_time, target_type,
+--       target_x, target_y, target_z, move_speed, move_dir }, ... }
+--
+-- Rank values: 0=Normal, 1=Rare, 2=Elite, 3=Boss
+-- Target types: 0=Self, 1=GroundSelf, 2=FriendlyTarget, 3=HostileTarget, 4=Ground
+
 return ethy

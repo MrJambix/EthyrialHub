@@ -86,11 +86,11 @@ end
 -- ═══════════════════════════════════════════════════════════════
 
 function M.in_combat()
-    return M.read_bool("0x344")
+    return M.read_bool("0x34C")
 end
 
 function M.is_moving()
-    return M.read_bool("0x280")
+    return M.read_bool("0x288")
 end
 
 function M.is_hidden()
@@ -98,23 +98,23 @@ function M.is_hidden()
 end
 
 function M.health_pct()
-    return M.read_float("0x21C")
-end
-
-function M.mana_pct()
     return M.read_float("0x220")
 end
 
+function M.mana_pct()
+    return M.read_float("0x224")
+end
+
 function M.attack_speed()
-    return M.read_float("0x324")
+    return M.read_float("0x32C")
 end
 
 function M.move_speed()
-    return M.read_float("0x2B0")
+    return M.read_float("0x2B8")
 end
 
 -- ═══════════════════════════════════════════════════════════════
---  CONDITION MASK (0x278) — CC state flags
+--  CONDITION MASK (0x280) — CC state flags
 -- ═══════════════════════════════════════════════════════════════
 
 -- Bit definitions (empirical — observe in Game Inspector to confirm)
@@ -137,7 +137,7 @@ for name, bit in pairs(M.CONDITION) do
 end
 
 function M.read_condition_mask()
-    return M.read_u32("0x278") or 0
+    return M.read_u32("0x280") or 0
 end
 
 function M.read_conditions()

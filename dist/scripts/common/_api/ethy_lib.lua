@@ -1577,6 +1577,52 @@ lib.core_telegraphs.scan = core.telegraphs.scan
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║  SECTION 19d — Argus2 + ShapeDrawer  (Timed Shape Drawing)             ║
+-- ║                                                                        ║
+-- ║  High-level timed shape drawing with entity attachment, heading         ║
+-- ║  controls, color interpolation, and automatic slot management.          ║
+-- ║                                                                        ║
+-- ║  Shapes: Rect, CenteredRect, Cone, DonutCone, Cross, Arrow, Chevron   ║
+-- ║  Builds on core.draw.ground_* primitives.  Pure Lua.                   ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
+--- Argus2 — static timed shape drawing API.
+--- All addTimed* functions return a shape ID (integer) for cancellation.
+---
+--- New heading args (appended to every timed draw func that has a heading):
+---   headingOffset  (number?, default 0)  — constant offset added to heading
+---   keepHeading    (boolean?)            — if true, preserve raw heading param
+---
+--- Example:
+---   -- Draw a 3-second cone at player position, heading north + 45° offset
+---   Argus2.addTimedConeFilled(3.0, px, py, pz, 10, 60, 0,
+---       {1,0,0,0.5}, {0,0,1,0.5}, nil, 0, nil, nil, false,
+---       nil, nil, nil, nil, false, false,
+---       45, false)
+---
+---   -- Cancel all shapes
+---   Argus2.cancelAll()
+
+--- ShapeDrawer — entity-attached timed shape drawing.
+--- Created via ShapeDrawer.new(entityUID).
+---
+--- New heading args (appended to every timedOnEnt func):
+---   headingOffset    (number?, default 0)
+---   offsetIsAbsolute (boolean?) — if true, heading = headingOffset exactly
+---
+--- Example:
+---   local sd = ShapeDrawer.new(bossUID)
+---   sd:addTimedConeOnEnt(4.0, 12, 90, 0,
+---       {1,0.3,0,0.6}, {1,0,0,0.8}, nil, 0.5,
+---       playerUID, false, nil, nil, nil, nil,
+---       -30, false)
+
+-- Note: Argus2 and ShapeDrawer are defined in argus2.lua.
+-- They auto-register their tick callback on first shape creation.
+-- Scripts can load them via:  local Argus2, ShapeDrawer = require("argus2")
+
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
 -- ║  SECTION 20 — GameObject Methods  (Player Userdata — DLL Mode)         ║
 -- ║                                                                        ║
 -- ║  When running as a DLL plugin, get_local_player() returns a native    ║
@@ -2086,6 +2132,8 @@ lib.summary = {
     ["core.graphics"]           = 11,  -- color, screen_size, set_camera, world_to_screen, text_2d, line_2d, rect_2d, circle_2d, text_3d, line_3d, circle_3d
     ["core.draw"]               = 11,  -- init, line, circle, hide, clear, ground_init, ground_status, ground_circle, ground_cone, ground_hide, ground_clear
     ["core.telegraphs"]         = 1,   -- scan
+    ["Argus2"]                  = 10,  -- addTimedRectFilled, addTimedCenteredRectFilled, addTimedConeFilled, addTimedDonutConeFilled, addTimedCrossFilled, addTimedArrowFilled, addTimedChevronFilled, cancel, cancelAll, activeCount
+    ["ShapeDrawer"]             = 8,   -- new, addTimedRectOnEnt, addTimedCenteredRectOnEnt, addTimedConeOnEnt, addTimedDonutConeOnEnt, addTimedCrossOnEnt, addTimedArrowOnEnt, addTimedChevronOnEnt
     ["core.network"]            = 2,   -- server_address, net_classes
     ["core.floor"]              = 3,   -- debug, search, inspect
     ["game.raw"]                = 6,   -- player, spells, nearby, target, inventory, send
