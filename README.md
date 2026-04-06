@@ -2,6 +2,9 @@
 
 Automation toolkit for **Ethyrial: Echoes of Yore**. Native C++ hub with embedded Lua 5.4, ImGui overlay, and a full game-injection toolkit. Includes combat rotations and a scriptable plugin system.
 
+## DISCORD
+https://discord.gg/thSFuUm3gu
+
 ## Quick Start
 
 1. **Download** the latest ZIP from this repo (Code > Download ZIP)
