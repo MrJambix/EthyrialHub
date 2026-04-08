@@ -622,14 +622,14 @@ function ScanTrees()
     return core.gathering.scan_trees() or {}
 end
 
---- Scan for skinning nodes nearby.
-function ScanSkins()
-    return core.gathering.scan_skins() or {}
+--- Scan for corpses nearby (with names).
+function ScanCorpses()
+    return core.gathering.scan_corpses() or {}
 end
 
---- Scan for fishing spots nearby.
-function ScanFishingSpots()
-    return core.gathering.fishing_spots() or {}
+--- Use tool on nearest corpse matching name.
+function UseToolOnCorpse(name)
+    return core.gathering.use_tool_on_corpse(name)
 end
 
 --- Scan for all resource nodes (any type), optional filter.

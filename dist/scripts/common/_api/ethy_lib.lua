@@ -820,21 +820,17 @@ lib.core_gathering.scan_ores = core.gathering.scan_ores
 --- Parsed array of ore node tables.
 lib.core_gathering.get_ores = core.gathering.get_ores
 
---- core.gathering.scan_skins() -> string
---- Scan for skinning nodes. Use get_skins() for parsed table.
-lib.core_gathering.scan_skins = core.gathering.scan_skins
+--- core.gathering.scan_corpses() -> string
+--- Scan for corpses in scene. Use get_corpses() for parsed table.
+lib.core_gathering.scan_corpses = core.gathering.scan_corpses
 
---- core.gathering.get_skins() -> table
---- Parsed array of skinning node tables.
-lib.core_gathering.get_skins = core.gathering.get_skins
+--- core.gathering.get_corpses() -> table
+--- Parsed array of corpse tables (uid, name, x, y, z, dist, ptr).
+lib.core_gathering.get_corpses = core.gathering.get_corpses
 
---- core.gathering.fishing_spots() -> string
---- Scan for fishing spots. Use get_fishing() for parsed table.
-lib.core_gathering.fishing_spots = core.gathering.fishing_spots
-
---- core.gathering.get_fishing() -> table
---- Parsed array of fishing spot tables.
-lib.core_gathering.get_fishing = core.gathering.get_fishing
+--- core.gathering.use_tool_on_corpse(name) -> string
+--- Use equipped tool on the nearest corpse matching name.
+lib.core_gathering.use_tool_on_corpse = core.gathering.use_tool_on_corpse
 
 --- core.gathering.use_entity(filter) -> string
 --- Interact with an entity by filter string (name/type).
