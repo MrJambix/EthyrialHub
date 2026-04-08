@@ -21,6 +21,21 @@ ethy.enums = enums
 ethy.Vec3  = require("common/_api/vec3")
 
 -- ══════════════════════════════════════════════════════════════
+-- Framework Modules (lazy-loaded, available via ethy.*)
+-- ══════════════════════════════════════════════════════════════
+
+ethy.events      = require("common/_api/event_bus")
+ethy.scheduler   = require("common/_api/scheduler")
+ethy.fsm         = require("common/_api/state_machine")
+ethy.waypoints   = require("common/_api/waypoints")
+ethy.buffs       = require("common/_api/buff_tracker")
+ethy.items       = require("common/_api/item_rules")
+ethy.combat_stats = require("common/_api/combat_stats")
+ethy.signals     = require("common/_api/signals")
+ethy.spell_queue = require("common/_api/spell_queue")
+ethy.zone        = require("common/_api/zone")
+
+-- ══════════════════════════════════════════════════════════════
 -- Logging
 -- ══════════════════════════════════════════════════════════════
 
@@ -416,5 +431,447 @@ end
 --
 -- Rank values: 0=Normal, 1=Rare, 2=Elite, 3=Boss
 -- Target types: 0=Self, 1=GroundSelf, 2=FriendlyTarget, 3=HostileTarget, 4=Ground
+
+-- ══════════════════════════════════════════════════════════════
+-- Teleport API
+-- ══════════════════════════════════════════════════════════════
+
+--- Teleport to position (full sync: stops movement, writes position, snaps transform, updates tiles).
+--- Returns parsed result table: {ok, from, to, snap, set_pos, tile, stop}
+function ethy.teleport(x, y, z)
+    local raw = core.send_command(string.format("TELEPORT %.2f %.2f %.2f", x, y, z or 0))
+    if not raw or raw:sub(1,3) ~= "OK|" then return raw end
+    -- Parse the OK|from=x,y,z|to=x,y,z|snap=N|... response
+    local result = { ok = true, raw = raw }
+    for kv in raw:gmatch("[^|]+") do
+        local k, v = kv:match("^(.-)=(.+)$")
+        if k then
+            local num = tonumber(v)
+            if num then result[k] = num else result[k] = v end
+        end
+    end
+    return result
+end
+
+--- Snap to position (calls Entity.SnapToPosition only, lighter than full teleport).
+function ethy.snap_to(x, y, z)
+    return core.send_command(string.format("SNAP_TO %.2f,%.2f,%.2f", x, y, z or 0))
+end
+
+--- Freeze player at a position (written every frame, suppresses server corrections).
+--- Call ethy.teleport_release() to stop holding.
+function ethy.teleport_hold(x, y, z)
+    return core.send_command(string.format("TELEPORT_HOLD %.2f %.2f %.2f", x, y, z or 0))
+end
+
+--- Stop freezing position (release the hold).
+function ethy.teleport_release()
+    return core.send_command("TELEPORT_RELEASE")
+end
+
+--- Check if position hold is active.
+--- Returns "HOLDING|pos=x,y,z" or "RELEASED"
+function ethy.teleport_status()
+    return core.send_command("TELEPORT_STATUS")
+end
+
+--- Teleport and hold — teleports then freezes at the destination.
+--- This is the strongest teleport: writes position every frame to prevent rubber-banding.
+--- MUST call ethy.teleport_release() when done.
+function ethy.teleport_lock(x, y, z)
+    local result = ethy.teleport(x, y, z)
+    ethy.teleport_hold(x, y, z or 0)
+    return result
+end
+
+--- Get teleport debug info (position fields, pointers, waypoints).
+function ethy.teleport_debug()
+    return core.send_command("TELEPORT_DEBUG")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Weight Lock API — bypass overweight movement restriction
+-- ══════════════════════════════════════════════════════════════
+
+--- Lock MaxWeight to 99999 (or custom value) so overweight debuff never applies.
+--- @param max_weight number|nil  Custom max weight value (default 99999)
+function ethy.weight_lock(max_weight)
+    if max_weight then
+        return core.send_command(string.format("WEIGHT_LOCK %.0f", max_weight))
+    end
+    return core.send_command("WEIGHT_LOCK")
+end
+
+--- Remove the weight lock, restoring normal weight checking.
+function ethy.weight_unlock()
+    return core.send_command("WEIGHT_UNLOCK")
+end
+
+--- Get weight status: locked state, current weight, max weight, overweight flag.
+function ethy.weight_status()
+    return core.send_command("WEIGHT_STATUS")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Network / Protocol API
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.dump_server_state()
+    return core.send_command("DUMP_SERVER_STATE")
+end
+
+function ethy.dump_protocol()
+    return core.send_command("DUMP_PROTOCOL")
+end
+
+function ethy.dump_net_classes()
+    return core.send_command("DUMP_NET_CLASSES")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Structured Server / Network Queries
+-- ══════════════════════════════════════════════════════════════
+
+ethy.server = {}
+
+function ethy.server.info()
+    local raw = core.send_command("SERVER_INFO")
+    if not raw or raw:sub(1,3) == "ERR" then return nil end
+    local t = {}
+    for kv in raw:gmatch("[^|]+") do
+        local k, v = kv:match("^(.-)=(.+)$")
+        if k then
+            local num = tonumber(v)
+            if num then t[k] = num else t[k] = v end
+        end
+    end
+    return t
+end
+
+function ethy.server.ip()
+    return core.send_command("SERVER_IP")
+end
+
+function ethy.server.port()
+    local r = core.send_command("SERVER_PORT")
+    return tonumber(r) or 0
+end
+
+function ethy.server.latency()
+    local r = core.send_command("SERVER_LATENCY")
+    return tonumber(r) or 0
+end
+
+function ethy.server.rtt()
+    local r = core.send_command("SERVER_RTT")
+    return tonumber(r) or 0
+end
+
+function ethy.server.status()
+    return core.send_command("SERVER_STATUS")
+end
+
+function ethy.server.stats()
+    local raw = core.send_command("SERVER_STATS")
+    if not raw or raw:sub(1,3) == "ERR" then return nil end
+    local t = {}
+    for kv in raw:gmatch("[^|]+") do
+        local k, v = kv:match("^(.-)=(.+)$")
+        if k then
+            local num = tonumber(v)
+            if num then t[k] = num else t[k] = v end
+        end
+    end
+    return t
+end
+
+function ethy.server.net_peer_status()
+    return core.send_command("NET_PEER_STATUS")
+end
+
+function ethy.server.player_uid()
+    local r = core.send_command("PLAYER_UID")
+    return tonumber(r) or 0
+end
+
+function ethy.server.account_id()
+    return core.send_command("ACCOUNT_ID")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Protocol Enum Lookups
+-- ══════════════════════════════════════════════════════════════
+
+ethy.protocol = {}
+
+function ethy.protocol.msg_type(id)
+    return core.send_command("MSG_TYPE " .. tostring(id))
+end
+
+function ethy.protocol.msg_type_name(name)
+    return core.send_command("MSG_TYPE_NAME " .. name)
+end
+
+function ethy.protocol.msg_type_all()
+    return core.send_command("MSG_TYPE_ALL")
+end
+
+function ethy.protocol.admin_msg_type(id)
+    return core.send_command("ADMIN_MSG_TYPE " .. tostring(id))
+end
+
+function ethy.protocol.admin_msg_type_all()
+    return core.send_command("ADMIN_MSG_TYPE_ALL")
+end
+
+function ethy.protocol.editor_msg_type(id)
+    return core.send_command("EDITOR_MSG_TYPE " .. tostring(id))
+end
+
+function ethy.protocol.editor_msg_type_all()
+    return core.send_command("EDITOR_MSG_TYPE_ALL")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Reflection — Method Addresses, Field Offsets
+-- ══════════════════════════════════════════════════════════════
+
+ethy.reflect = {}
+
+function ethy.reflect.method_addr(class_name, method_name, arg_count)
+    arg_count = arg_count or 0
+    return core.send_command(string.format("METHOD_ADDR %s %s %d", class_name, method_name, arg_count))
+end
+
+function ethy.reflect.method_list(class_name)
+    return core.send_command("METHOD_LIST " .. class_name)
+end
+
+function ethy.reflect.field_offset(class_name, field_name)
+    return core.send_command("FIELD_OFFSET " .. class_name .. " " .. field_name)
+end
+
+function ethy.reflect.field_list(class_name)
+    return core.send_command("FIELD_LIST " .. class_name)
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Module PE Queries
+-- ══════════════════════════════════════════════════════════════
+
+ethy.modules = {}
+
+function ethy.modules.base(module_name)
+    return core.send_command("MODULE_BASE " .. module_name)
+end
+
+function ethy.modules.section(module_name, section_name)
+    return core.send_command("MODULE_SECTION " .. module_name .. " " .. section_name)
+end
+
+function ethy.modules.dump()
+    return core.send_command("DUMP_MODULES")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Scene / Zone
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.scene_name()
+    return core.send_command("SCENE_NAME")
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Memory Tools API
+-- ══════════════════════════════════════════════════════════════
+
+ethy.memory = {}
+
+function ethy.memory.dump_modules()
+    return core.send_command("DUMP_MODULES")
+end
+
+function ethy.memory.read_bytes(addr, count)
+    return core.send_command(string.format("READ_BYTES %s %d", addr, count))
+end
+
+function ethy.memory.patch_bytes(addr, hex_bytes)
+    return core.send_command("PATCH_BYTES " .. addr .. " " .. hex_bytes)
+end
+
+function ethy.memory.nop(addr, count)
+    return core.send_command(string.format("NOP_BYTES %s %d", addr, count))
+end
+
+function ethy.memory.restore(addr, original_hex)
+    return core.send_command("RESTORE_BYTES " .. addr .. " " .. original_hex)
+end
+
+function ethy.memory.scan_aob(module_name, pattern)
+    return core.send_command("SCAN_AOB " .. module_name .. " " .. pattern)
+end
+
+function ethy.memory.watch(addr, mode)
+    mode = mode or "access"
+    return core.send_command("WATCH_ADDR " .. addr .. " " .. mode)
+end
+
+function ethy.memory.watch_clear(dr_index)
+    return core.send_command("WATCH_CLEAR " .. tostring(dr_index))
+end
+
+function ethy.memory.watch_clear_all()
+    return core.send_command("WATCH_CLEAR_ALL")
+end
+
+function ethy.memory.watch_status()
+    return core.send_command("WATCH_STATUS")
+end
+
+function ethy.memory.watch_hits()
+    return core.send_command("WATCH_HITS")
+end
+
+function ethy.memory.alloc_exec(size)
+    return core.send_command("ALLOC_EXEC " .. tostring(size))
+end
+
+function ethy.memory.free_exec(addr, size)
+    return core.send_command(string.format("FREE_EXEC %s %d", addr, size))
+end
+
+function ethy.memory.write_exec(addr, hex_bytes)
+    return core.send_command("WRITE_EXEC " .. addr .. " " .. hex_bytes)
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Player State (comprehensive)
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.player_state()
+    local raw = core.send_command("PLAYER_STATE")
+    if not raw or raw == "NO_RESPONSE" then return nil end
+    local state = {}
+    for kv in raw:gmatch("[^|]+") do
+        local k, v = kv:match("^(.-)=(.+)$")
+        if k then
+            local num = tonumber(v)
+            if num then state[k] = num
+            elseif v == "true" then state[k] = true
+            elseif v == "false" then state[k] = false
+            else state[k] = v end
+        end
+    end
+    return state
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Convenience: async / wait (delegates to scheduler)
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.async(fn, name)
+    return ethy.scheduler.async(fn, name)
+end
+
+function ethy.wait(seconds)
+    return ethy.scheduler.wait(seconds)
+end
+
+function ethy.wait_until(fn, timeout)
+    return ethy.scheduler.wait_until(fn, timeout)
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Convenience: quick state queries
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.hp()
+    if conn and conn.get_hp then return conn.get_hp() end
+    return 100
+end
+
+function ethy.mp()
+    if conn and conn.get_mp then return conn.get_mp() end
+    return 100
+end
+
+function ethy.in_combat()
+    if conn and conn.in_combat then return conn.in_combat() end
+    return false
+end
+
+function ethy.is_dead()
+    if conn and conn.is_dead then return conn.is_dead() end
+    return false
+end
+
+function ethy.has_target()
+    if conn and conn.has_target then return conn.has_target() end
+    return false
+end
+
+function ethy.is_moving()
+    if conn and conn.is_moving then return conn.is_moving() end
+    return false
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- Unified Tick — drives all framework subsystems
+-- Call ethy.tick() in your main loop or on_update callback
+-- to power events, scheduler, waypoints, items, zone, etc.
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.tick()
+    -- 1. Build current game state snapshot for event bus
+    local state = {
+        hp = ethy.hp(),
+        mp = ethy.mp(),
+        in_combat = ethy.in_combat(),
+        is_dead = ethy.is_dead(),
+        has_target = ethy.has_target(),
+        is_moving = ethy.is_moving(),
+        target_uid = 0,
+        target_name = nil,
+        target_dead = false,
+        buffs = ethy.buffs.active_set(),
+    }
+
+    -- Fill target info if available
+    if state.has_target and conn then
+        if conn.get_target_uid then state.target_uid = conn.get_target_uid() or 0 end
+        if conn.get_target_name then
+            local n = conn.get_target_name()
+            if n and n ~= "" and n ~= "NO_TARGET" then state.target_name = n end
+        end
+        if conn.is_target_dead then state.target_dead = conn.is_target_dead() end
+    end
+
+    -- 2. Drive all subsystems
+    ethy.events.tick(state)
+    ethy.scheduler.tick()
+    ethy.waypoints.tick()
+    ethy.items.tick()
+    ethy.zone.tick()
+
+    -- 3. Process scheduled callbacks
+    ethy._process_scheduled()
+
+    -- 4. Track combat stats if session is active
+    if ethy.combat_stats.elapsed() > 0 then
+        local target_hp = nil
+        if state.has_target and conn and conn.get_target_hp then
+            target_hp = conn.get_target_hp()
+        end
+        ethy.combat_stats.tick(state.in_combat, target_hp)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════
+-- State Machine helper — creates FSM with ethy integration
+-- ══════════════════════════════════════════════════════════════
+
+function ethy.state_machine(states, initial, name)
+    return ethy.fsm.new(states, initial, name)
+end
 
 return ethy

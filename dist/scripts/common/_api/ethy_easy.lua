@@ -158,11 +158,6 @@ function GetDirection()
     return tonumber(core.player.direction()) or 0
 end
 
---- Get your attack speed value.
-function GetAttackSpeed()
-    return tonumber(core.player.attack_speed()) or 0
-end
-
 --- Get your food/satiation level.
 function GetFood()
     return tonumber(core.player.food()) or 0
@@ -520,9 +515,16 @@ function MoveTo(x, y)
     return core.movement.move_to(x, y)
 end
 
---- Move toward your current target.
+--- Move toward your current hostile target.
 function MoveToTarget()
     return core.movement.move_to_target()
+end
+
+--- Move toward your current friendly target.
+--- Use this when you have a friendly (green) target selected.
+--- Example: MoveToTargetFriendly()
+function MoveToTargetFriendly()
+    return core.movement.move_to_target_friendly()
 end
 
 --- Stop all movement.
@@ -533,6 +535,12 @@ end
 --- Follow an entity by its unique ID.
 function Follow(uid)
     return core.movement.follow_entity(uid)
+end
+
+--- Follow an entity at a specific range.
+--- Example: FollowRange(player_uid, 5.0)
+function FollowRange(uid, range)
+    return core.movement.follow_range(uid, range or 2.0)
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -570,6 +578,21 @@ end
 --- Get equipped items.
 function GetEquipped()
     return core.inventory.equipped() or {}
+end
+
+--- Use an item on another item/entity (e.g. skinning knife on trophy fish).
+--- Both arguments are UIDs from your inventory.
+--- Example: UseItemOn(knife_uid, fish_uid)
+function UseItemOn(item_uid, target_uid)
+    return core.inventory.item_use_on(item_uid, target_uid)
+end
+
+--- Drop an item from your inventory.
+--- amount is optional (defaults to 1).
+--- Example: DropItem(item_uid)
+--- Example: DropItem(item_uid, 5)  -- drop 5 of a stack
+function DropItem(uid, amount)
+    return core.inventory.drop_item(uid, amount or 1)
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -743,6 +766,224 @@ function ShouldMisplay(chance)
 end
 
 -- ═══════════════════════════════════════════════════════════════
+--  BUFF TRACKER (Advanced)
+--  Enhanced buff queries with duration tracking.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Get remaining duration of a buff in seconds.
+--- Example: if BuffRemaining("Shield") < 3 then CastSpell("Shield") end
+function BuffRemaining(name)
+    return ethy.buffs.remaining(name)
+end
+
+--- Check if a buff is about to expire (uses buff_tracker).
+--- Example: if BuffExpiring("Regen", 5) then CastSpell("Regen") end
+function BuffExpiring(name, threshold)
+    return ethy.buffs.expiring(name, threshold)
+end
+
+--- Check if you have a debuff active.
+--- Example: if HasDebuff("Poison") then CastSpell("Cleanse") end
+function HasDebuff(name)
+    return ethy.buffs.has_debuff(name)
+end
+
+--- Check if you have ANY of the listed buffs.
+--- Example: if HasAnyBuff("Shield", "Barrier") then ... end
+function HasAnyBuff(...)
+    return ethy.buffs.has_any(...)
+end
+
+--- Check if you have ALL of the listed buffs.
+function HasAllBuffs(...)
+    return ethy.buffs.has_all(...)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  SPELL QUEUE (GCD-Aware Casting)
+--  Smart spell casting with priority and queue support.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Set spell priority list (first = highest priority).
+--- Example: SetSpellPriority({"Fireball", "Frostbolt", "Ice Lance"})
+function SetSpellPriority(spell_list)
+    ethy.spell_queue.set_priority(spell_list)
+end
+
+--- Queue a spell to be cast next (skips priority order).
+--- Example: QueueSpell("Emergency Heal")
+function QueueSpell(name)
+    ethy.spell_queue.enqueue(name)
+end
+
+--- Queue multiple spells in sequence.
+--- Example: QueueSequence("Buff1", "Buff2", "Buff3")
+function QueueSequence(...)
+    ethy.spell_queue.enqueue_sequence(...)
+end
+
+--- Run one tick of the spell queue (auto-casts best available).
+--- Returns the spell name that was cast, or nil.
+function RunSpellQueue()
+    return ethy.spell_queue.tick()
+end
+
+--- Add a condition for when a spell should be used.
+--- Example: SetSpellCondition("Heal", function() return GetHP() < 50 end)
+function SetSpellCondition(spell_name, condition_fn)
+    ethy.spell_queue.set_condition(spell_name, condition_fn)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  WAYPOINTS & PATHING
+--  Record and follow paths.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Start recording your movement as waypoints.
+function RecordPathStart()
+    ethy.waypoints.record_start()
+end
+
+--- Stop recording and get the path.
+function RecordPathStop()
+    return ethy.waypoints.record_stop()
+end
+
+--- Follow a list of waypoints.
+--- Example: FollowPath(waypoints, {loop = true})
+function FollowPath(path, opts)
+    ethy.waypoints.follow(path, opts)
+end
+
+--- Stop following the current path.
+function StopPath()
+    ethy.waypoints.stop()
+end
+
+--- Are we currently following a path?
+function IsFollowingPath()
+    return ethy.waypoints.is_following()
+end
+
+--- Create a circular patrol path.
+--- Example: local path = CirclePath(100, 50, 200, 20, 8)
+function CirclePath(cx, cy, cz, radius, points)
+    return ethy.waypoints.circle(cx, cy, cz, radius, points)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  ZONE AWARENESS
+--  Know where you are.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Get current zone/map name.
+function GetZone()
+    return ethy.zone.name()
+end
+
+--- Get current region name.
+function GetRegion()
+    return ethy.zone.region()
+end
+
+--- Check if in a specific zone (partial match).
+--- Example: if InZone("Darkwood") then ... end
+function InZone(name)
+    return ethy.zone.is(name)
+end
+
+--- Is the current zone safe (no PvP)?
+function IsZoneSafe()
+    return ethy.zone.is_safe()
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  COMBAT STATS
+--  Track your performance.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Start tracking combat statistics.
+function StartStats()
+    ethy.combat_stats.start_session()
+end
+
+--- Get kills per hour.
+function KillsPerHour()
+    return ethy.combat_stats.kills_per_hour()
+end
+
+--- Get a formatted stats summary string.
+function GetStatsSummary()
+    return ethy.combat_stats.summary()
+end
+
+--- Record a kill for stats tracking.
+function RecordKill(mob_name)
+    ethy.combat_stats.on_kill(mob_name)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  SIGNALS (Script Communication)
+--  Share data between scripts.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Set a shared variable that other scripts can read.
+--- Example: SetShared("mode", "gathering")
+function SetShared(key, value)
+    ethy.signals.set(key, value)
+end
+
+--- Get a shared variable set by any script.
+--- Example: local mode = GetShared("mode", "idle")
+function GetShared(key, default)
+    return ethy.signals.get(key, default)
+end
+
+--- Fire a signal that other scripts can listen for.
+--- Example: FireSignal("pull_ready")
+function FireSignal(name, data)
+    ethy.signals.signal(name, data)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  INVENTORY AUTOMATION
+--  Auto-use items based on conditions.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Auto-use an item when a condition is met.
+--- Example: AutoUseItem("Health Potion", function() return GetHP() < 40 end)
+function AutoUseItem(name, condition, cooldown)
+    ethy.items.use_when(name, condition, cooldown)
+end
+
+--- Check if you have an item in inventory.
+--- Example: if HaveItem("Health Potion") then ... end
+function HaveItem(name)
+    return ethy.items.has(name)
+end
+
+--- Count how many of an item you have.
+function CountItem(name)
+    return ethy.items.count(name)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  UNIFIED TICK
+--  Drive all framework subsystems.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Call this in your main loop to power events, waypoints, items, etc.
+--- Example:
+---   while not ShouldStop() do
+---       Tick()
+---       -- your logic
+---       Sleep(0.3)
+---   end
+function Tick()
+    ethy.tick()
+end
+
+-- ═══════════════════════════════════════════════════════════════
 --  RAW COMMANDS
 --  Send raw pipe commands (advanced, escape hatch).
 -- ═══════════════════════════════════════════════════════════════
@@ -772,6 +1013,545 @@ function DoRotation(spell_list)
     end
     return false
 end
+
+-- ═══════════════════════════════════════════════════════════════
+--  CLIENT-SIDE MODIFICATIONS
+--  Things you can change that take effect instantly on your client.
+--  These are visual/camera/rendering tweaks — not cheats that
+--  the server would block.
+-- ═══════════════════════════════════════════════════════════════
+
+-- ── Teleport ──
+
+--- Teleport to an exact position (client-side, full sync).
+--- Example: TeleportTo(100, 50, 200)
+function TeleportTo(x, y, z)
+    return ethy.teleport(x, y, z)
+end
+
+--- Teleport and HOLD position (prevents rubber-banding).
+--- MUST call TeleportUnlock() when done!
+--- Example: TeleportLock(100, 50, 200)
+function TeleportLock(x, y, z)
+    return ethy.teleport_lock(x, y, z)
+end
+
+--- Release a teleport hold (stop freezing position).
+function TeleportUnlock()
+    return ethy.teleport_release()
+end
+
+--- Check if teleport hold is active.
+function IsTeleportLocked()
+    local status = ethy.teleport_status()
+    return status and status:find("HOLDING") ~= nil
+end
+
+-- ── Movement Speed ──
+
+--- Lock your movement speed to a value (client-side).
+--- Example: SetMoveSpeed(8)
+function SetMoveSpeed(speed)
+    return SendCommand("SPEED_LOCK " .. tostring(speed or 7))
+end
+
+--- Unlock movement speed (return to normal server speed).
+function UnlockMoveSpeed()
+    return SendCommand("SPEED_UNLOCK")
+end
+
+-- ── Weight Lock ──
+
+--- Lock MaxWeight to 99999 so the overweight debuff never applies.
+--- Lets you move freely regardless of inventory weight.
+--- Example: WeightLock()
+function WeightLock(max_weight)
+    return ethy.weight_lock(max_weight)
+end
+
+--- Unlock weight — restore normal overweight checking.
+function WeightUnlock()
+    return ethy.weight_unlock()
+end
+
+--- Get weight status info (current_weight, max_weight, overweight flag).
+function WeightStatus()
+    return ethy.weight_status()
+end
+
+--- Check if weight lock is active.
+function IsWeightLocked()
+    local status = ethy.weight_status()
+    return status and status:find("locked=1") ~= nil
+end
+
+--- Get current speed status (base, current, forward, modifiers).
+--- Returns raw status string.
+function GetSpeedStatus()
+    return SendCommand("SPEED_STATUS")
+end
+
+-- ── Camera ──
+
+--- Set the camera zoom distance.
+--- Example: SetCameraDistance(20)
+function SetCameraDistance(dist)
+    return SendCommand("SET_CAMERA_DISTANCE " .. tostring(dist))
+end
+
+--- Set the maximum camera zoom-out distance.
+--- Example: SetCameraMaxDistance(50)
+function SetCameraMaxDistance(dist)
+    return SendCommand("SET_CAMERA_MAX_DIST " .. tostring(dist))
+end
+
+--- Set the minimum camera zoom-in distance.
+--- Example: SetCameraMinDistance(2)
+function SetCameraMinDistance(dist)
+    return SendCommand("SET_CAMERA_MIN_DIST " .. tostring(dist))
+end
+
+--- Set camera horizontal angle (rotation around character).
+--- Example: SetCameraAngle(180)
+function SetCameraAngle(angle)
+    return SendCommand("SET_CAMERA_ANGLE " .. tostring(angle))
+end
+
+--- Set camera vertical pitch (up/down tilt).
+--- Example: SetCameraPitch(30)
+function SetCameraPitch(pitch)
+    return SendCommand("SET_CAMERA_PITCH " .. tostring(pitch))
+end
+
+-- ── Field of View ──
+
+--- Set the camera field of view (default is ~60).
+--- Higher = wider view, lower = zoomed in.
+--- Example: SetFOV(90)
+function SetFOV(fov)
+    return SendCommand("SET_FOV " .. tostring(fov))
+end
+
+-- ── Rendering & Draw Distance ──
+
+--- Set how far you can see (render distance).
+--- Example: SetRenderDistance(1500)
+function SetRenderDistance(dist)
+    return SendCommand("SET_RENDER_DIST " .. tostring(dist))
+end
+
+--- Set the far clip plane (geometry beyond this is invisible).
+--- Example: SetFarClip(2000)
+function SetFarClip(dist)
+    return SendCommand("SET_FAR_CLIP " .. tostring(dist))
+end
+
+--- Set LOD bias (Level of Detail). Higher = more detail at distance.
+--- Example: SetLODBias(2.0)
+function SetLODBias(bias)
+    return SendCommand("SET_LOD_BIAS " .. tostring(bias))
+end
+
+--- Set shadow draw distance.
+--- Example: SetShadowDistance(200)
+function SetShadowDistance(dist)
+    return SendCommand("SET_SHADOW_DIST " .. tostring(dist))
+end
+
+--- Set shadow quality level (0 = off, 1 = low, 2 = medium, 3 = high).
+--- Example: SetShadowQuality(3)
+function SetShadowQuality(level)
+    return SendCommand("SET_SHADOW_QUALITY " .. tostring(level))
+end
+
+--- Set overall graphics quality level (0-5).
+--- Example: SetQualityLevel(5)
+function SetQualityLevel(level)
+    return SendCommand("SET_QUALITY_LEVEL " .. tostring(level))
+end
+
+--- Set max pixel lights rendered.
+--- Example: SetPixelLights(4)
+function SetPixelLights(count)
+    return SendCommand("SET_PIXEL_LIGHTS " .. tostring(count))
+end
+
+--- Set grass density (0.0 to 1.0, or higher).
+--- Example: SetGrassDensity(0.5)  -- half grass
+--- Example: SetGrassDensity(0)    -- no grass (performance boost)
+function SetGrassDensity(density)
+    return SendCommand("SET_GRASS_DENSITY " .. tostring(density))
+end
+
+--- Enable or disable VSync.
+--- Example: SetVSync(true)
+function SetVSync(enabled)
+    return SendCommand("SET_VSYNC " .. (enabled and "1" or "0"))
+end
+
+-- ── Fog ──
+
+--- Enable or disable fog.
+--- Example: SetFogEnabled(false)  -- turn off fog
+function SetFogEnabled(enabled)
+    return SendCommand("SET_FOG_ENABLED " .. (enabled and "1" or "0"))
+end
+
+--- Set where fog starts (distance from camera).
+--- Example: SetFogStart(500)
+function SetFogStart(dist)
+    return SendCommand("SET_FOG_START " .. tostring(dist))
+end
+
+--- Set where fog is fully opaque.
+--- Example: SetFogEnd(2000)
+function SetFogEnd(dist)
+    return SendCommand("SET_FOG_END " .. tostring(dist))
+end
+
+--- Set fog density (0.0 to 1.0).
+--- Example: SetFogDensity(0.01)
+function SetFogDensity(density)
+    return SendCommand("SET_FOG_DENSITY " .. tostring(density))
+end
+
+-- ── Entity Visuals ──
+
+--- Set the scale of your character model.
+--- Example: SetScale(2.0)   -- double size
+--- Example: SetScale(0.5)   -- half size
+function SetScale(scale)
+    return SendCommand("SET_SCALE " .. tostring(scale))
+end
+
+--- Play an animation on your character.
+--- Example: SetAnimation("dance")
+function SetAnimation(anim_name)
+    return SendCommand("SET_ANIM " .. tostring(anim_name))
+end
+
+--- Freeze or unfreeze player controls.
+--- Example: SetFrozenState(true)  -- freeze
+function SetFrozenState(frozen)
+    return SendCommand("SET_FROZEN " .. (frozen and "1" or "0"))
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  ADVANCED QUERIES
+--  New Phase 5 commands for deeper game info.
+-- ═══════════════════════════════════════════════════════════════
+
+--- Check if a spell is FULLY ready (cooldown + mana + not silenced).
+--- Returns a table: { ready, cd, mana_ok, silenced, cast_time, range }
+--- Example:
+---   local info = IsSpellFullyReady("Fireball")
+---   if info.ready then CastSpell("Fireball") end
+function IsSpellFullyReady(name)
+    if not name then return { ready = false } end
+    local raw = SendCommand("SPELL_IS_READY_FULL " .. name)
+    if not raw or raw:find("^ERR:") then return { ready = false } end
+    local t = {}
+    for k, v in raw:gmatch("([%w_]+)=([^|]+)") do
+        t[k] = tonumber(v) or v
+    end
+    t.ready = (t.ready == 1)
+    t.mana_ok = (t.mana_ok == 1)
+    t.silenced = (t.silenced == 1)
+    return t
+end
+
+--- Get your condition states (rooted, silenced, stunned, etc).
+--- Returns a table of booleans.
+--- Example:
+---   local cond = GetConditions()
+---   if cond.silenced then Say("I'm silenced!") end
+function GetConditions()
+    local raw = SendCommand("PLAYER_CONDITIONS")
+    if not raw or raw:find("^ERR:") then return {} end
+    local t = {}
+    for k, v in raw:gmatch("([%w_]+)=([^|]+)") do
+        t[k] = (v == "1") or (tonumber(v) and tonumber(v) ~= 0) or false
+    end
+    return t
+end
+
+--- Check if you are rooted (can't move).
+function IsRooted()
+    local c = GetConditions()
+    return c.rooted or false
+end
+
+--- Check if you are silenced (can't cast).
+function IsSilenced()
+    local c = GetConditions()
+    return c.silenced or false
+end
+
+--- Get the last corpse you created (for manual looting).
+--- Returns: { uid, x, y, z, corpse_of, container } or nil
+function GetLastCorpse()
+    local raw = SendCommand("LAST_CORPSE")
+    if not raw or raw:find("^ERR:") then return nil end
+    local t = {}
+    for k, v in raw:gmatch("([%w_]+)=([^|]+)") do
+        t[k] = tonumber(v) or v
+    end
+    return t
+end
+
+--- Get item modifications (sockets, enchants) for an item by UID.
+--- Returns a list of { name, type, value, tier }
+function GetItemMods(uid)
+    local raw = SendCommand("ITEM_MODS " .. tostring(uid))
+    if not raw or raw == "NONE" or raw:find("^ERR:") then return {} end
+    local mods = {}
+    for entry in raw:gmatch("[^#]+") do
+        local m = {}
+        for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
+            m[k] = tonumber(v) or v
+        end
+        if m.name then table.insert(mods, m) end
+    end
+    return mods
+end
+
+--- Get quest objectives for a named quest.
+--- Returns a list of { id, title, type, complete, text }
+function GetQuestObjectives(quest_name)
+    local raw = SendCommand("QUEST_OBJECTIVES " .. tostring(quest_name))
+    if not raw or raw:find("^ERR:") then return {} end
+    local objectives = {}
+    for entry in raw:gmatch("[^#]+") do
+        local o = {}
+        for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
+            o[k] = tonumber(v) or v
+        end
+        if o.title then
+            o.complete = (o.complete == 1)
+            table.insert(objectives, o)
+        end
+    end
+    return objectives
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  LEASH MODE
+--  Stay within a set distance of a target player.
+--  Not autofollow — only moves toward target if outside range.
+-- ═══════════════════════════════════════════════════════════════
+
+local _leash = {
+    target_uid = nil,
+    distance   = 10.0,
+    active     = false,
+}
+
+--- Set the player UID to leash to.
+--- Example: LeashTarget(12345)
+function LeashTarget(uid)
+    _leash.target_uid = uid
+end
+
+--- Set the max leash distance (float).
+--- Example: LeashDistance(15.0)
+function LeashDistance(range)
+    _leash.distance = range or 10.0
+end
+
+--- Enable or disable leash mode.
+--- Example: LeashActive(true)
+function LeashActive(on)
+    _leash.active = on and true or false
+end
+
+--- Get current leash state.
+--- Returns: { active, target_uid, distance }
+function GetLeashState()
+    return {
+        active     = _leash.active,
+        target_uid = _leash.target_uid,
+        distance   = _leash.distance,
+    }
+end
+
+--- Call this in your main loop to enforce the leash.
+--- Returns true if it moved toward the target.
+--- Example:
+---   while not ShouldStop() do
+---       LeashCheck()
+---       -- rest of your loop
+---       Sleep(0.3)
+---   end
+function LeashCheck()
+    if not _leash.active or not _leash.target_uid then return false end
+
+    local nearby = GetNearbyAll()
+    for _, ent in ipairs(nearby) do
+        if ent.uid == _leash.target_uid then
+            if ent.dist and ent.dist > _leash.distance then
+                FollowRange(_leash.target_uid, _leash.distance)
+                return true
+            end
+            return false
+        end
+    end
+    -- Target not found nearby — try to follow anyway
+    FollowRange(_leash.target_uid, _leash.distance)
+    return true
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  SAFETY MODE
+--  Automatically stop scripts if other players are nearby.
+--  Supports range filtering, known associates, and group ignore.
+-- ═══════════════════════════════════════════════════════════════
+
+local _safety = {
+    active            = false,
+    range             = 50.0,
+    known_associates  = {},      -- names to ignore (friends/guildies)
+    ignore_group      = false,   -- ignore party members
+    safe_location     = nil,     -- {x, y} to move to when triggered
+    wait_seconds      = 30,      -- how long to wait at safe location
+    _triggered        = false,
+    _trigger_time     = 0,
+}
+
+--- Enable or disable safety mode.
+--- Example: SafetyActive(true)
+function SafetyActive(on)
+    _safety.active = on and true or false
+end
+
+--- Set the detection range for nearby players.
+--- Example: SafetyRange(40.0)
+function SafetyRange(range)
+    _safety.range = range or 50.0
+end
+
+--- Set a list of known player names to ignore (friends, guildies).
+--- Example: SafetyKnownAssociates({"FriendName1", "GuildMate2"})
+function SafetyKnownAssociates(names)
+    _safety.known_associates = {}
+    if names then
+        for _, n in ipairs(names) do
+            _safety.known_associates[n] = true
+        end
+    end
+end
+
+--- Ignore party/group members in safety checks.
+--- Example: SafetyIgnoreGroup(true)
+function SafetyIgnoreGroup(on)
+    _safety.ignore_group = on and true or false
+end
+
+--- Set an optional safe location to move to when triggered.
+--- Example: SafetySetSafeLocation(100, 200, 60)
+function SafetySetSafeLocation(x, y, wait_seconds)
+    _safety.safe_location = { x = x, y = y }
+    _safety.wait_seconds  = wait_seconds or 30
+end
+
+--- Get current safety state.
+function GetSafetyState()
+    return {
+        active     = _safety.active,
+        range      = _safety.range,
+        triggered  = _safety._triggered,
+        ignore_group = _safety.ignore_group,
+    }
+end
+
+--- Check if unknown players are nearby (returns true = danger).
+--- Filters out known associates and optionally party members.
+--- Example: if PlayersNearby() then Say("Player spotted!") end
+function PlayersNearby()
+    if not _safety.active then return false end
+
+    local raw = core.inventory.nearby_players()
+    if not raw or raw == "NONE" then return false end
+
+    -- Parse count header
+    local count_str = raw:match("^count=(%d+)")
+    if not count_str or tonumber(count_str) == 0 then return false end
+
+    -- Get party member names for group ignore
+    local party_names = {}
+    if _safety.ignore_group then
+        local party = GetPartyMembers()
+        if party then
+            for _, p in ipairs(party) do
+                if p.name then party_names[p.name] = true end
+            end
+        end
+    end
+
+    -- Parse each player entry
+    for entry in raw:gmatch("[^#]+") do
+        local name = entry:match("name=([^|]+)")
+        local dist = tonumber(entry:match("dist=([%d%.]+)"))
+        if name and name ~= "?" and dist then
+            if dist <= _safety.range then
+                -- Check if this player is a known associate
+                if not _safety.known_associates[name] then
+                    -- Check if this player is in our party
+                    if not party_names[name] then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+--- Call this in your main loop for full safety protection.
+--- Will stop movement and return true if unsafe (script should pause).
+--- Optionally moves to safe location and waits.
+--- Example:
+---   while not ShouldStop() do
+---       if SafetyCheck() then
+---           Sleep(1)  -- stay paused while unsafe
+---       else
+---           -- your normal bot logic
+---       end
+---       Sleep(0.3)
+---   end
+function SafetyCheck()
+    if not _safety.active then return false end
+
+    if PlayersNearby() then
+        if not _safety._triggered then
+            _safety._triggered = true
+            _safety._trigger_time = Now()
+            StopMoving()
+            Warn("[Safety] Player detected nearby — pausing all activity")
+
+            if _safety.safe_location then
+                MoveTo(_safety.safe_location.x, _safety.safe_location.y)
+            end
+        end
+        return true
+    end
+
+    -- Was triggered but no longer see players
+    if _safety._triggered then
+        local elapsed = TimeSince(_safety._trigger_time)
+        if _safety.safe_location and elapsed < _safety.wait_seconds then
+            return true  -- still waiting at safe location
+        end
+        _safety._triggered = false
+        _safety._trigger_time = 0
+        Say("[Safety] Area clear — resuming")
+    end
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════
+--  CONVENIENCE SHORTCUTS
+--  Common patterns wrapped into single calls.
+-- ═══════════════════════════════════════════════════════════════
 
 --- A complete "stay alive" check — heals if HP is low.
 --- heal_spell: name of your heal spell
