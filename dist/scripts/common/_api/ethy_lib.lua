@@ -405,6 +405,35 @@ lib.core_targeting.get_target_v2 = core.targeting.get_target_v2
 --- Parsed friendly target table.
 lib.core_targeting.get_friendly = core.targeting.get_friendly
 
+--- core.targeting.target_casting() -> table|nil
+--- Returns { is_casting=true, spell, duration, elapsed, type } if target is
+--- casting, nil otherwise.
+lib.core_targeting.target_casting = core.targeting.target_casting
+
+--- core.targeting.target_casting_dump() -> string
+--- Raw TARGET_CASTING_DUMP pipe string.
+lib.core_targeting.target_casting_dump = core.targeting.target_casting_dump
+
+--- core.targeting.face_target(uid?) -> string
+--- Turn the player to face the current target (or a specific UID).
+lib.core_targeting.face_target = core.targeting.face_target
+
+--- core.targeting.is_target_dead() -> boolean
+--- True if no target or target HP <= 0.
+lib.core_targeting.is_target_dead = core.targeting.is_target_dead
+
+--- core.targeting.is_target_boss() -> string
+--- "1" if the current target is a boss.
+lib.core_targeting.is_target_boss = core.targeting.is_target_boss
+
+--- core.targeting.is_target_elite() -> string
+--- "1" if the current target is elite.
+lib.core_targeting.is_target_elite = core.targeting.is_target_elite
+
+--- core.targeting.target_hp_v2() -> string
+--- Raw TARGET_HP_V2 pipe string with extended HP data.
+lib.core_targeting.target_hp_v2 = core.targeting.target_hp_v2
+
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
 -- ║  SECTION 5 — core.movement.*  (Movement Control)                       ║
@@ -421,6 +450,12 @@ lib.core_movement = {}
 ---   core.movement.move_to(123.5, 456.7)
 ---
 lib.core_movement.move_to = core.movement.move_to
+
+--- core.movement.move_to_ptr(hex, range) -> string
+--- Walk toward an entity by pointer using TryMoveTo(Entity, float).
+--- @param hex string hex pointer from node scan
+--- @param range number optional approach range (default 2.0)
+lib.core_movement.move_to_ptr = core.movement.move_to_ptr
 
 --- core.movement.move_to_target() -> string
 --- Walk toward the current target.

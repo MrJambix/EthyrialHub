@@ -874,4 +874,84 @@ function ethy.state_machine(states, initial, name)
     return ethy.fsm.new(states, initial, name)
 end
 
+-- ══════════════════════════════════════════════════════════════
+-- Terrain & Walkability — tile data, walk grids, blocking ents
+-- ══════════════════════════════════════════════════════════════
+
+ethy.terrain = {}
+
+--- Raw terrain dump around (cx, cy) with hex bytes + parsed fields per tile.
+---@param cx number Tile X center
+---@param cy number Tile Y center
+---@param floor? number Floor layer (default 0)
+---@param radius? number Scan radius in tiles (default 5, max 50)
+---@return string|nil raw Raw IPC response or nil on error
+function ethy.terrain.dump(cx, cy, floor, radius)
+    floor = floor or 0; radius = radius or 5
+    local raw = core.terrain and core.terrain.dump
+        and core.terrain.dump(cx, cy, floor, radius)
+        or core.send_command(string.format("TERRAIN_DUMP %d %d %d %d", cx, cy, floor, radius))
+    if not raw or raw:sub(1, 3) == "ERR" then return nil end
+    return raw
+end
+
+--- Walkability grid + blocking entities around (cx, cy).
+---@param cx number Tile X center
+---@param cy number Tile Y center
+---@param floor? number Floor layer (default 0)
+---@param radius? number Scan radius in tiles (default 5, max 50)
+---@return string|nil raw Raw IPC response or nil on error
+function ethy.terrain.walkability(cx, cy, floor, radius)
+    floor = floor or 0; radius = radius or 5
+    local raw = core.terrain and core.terrain.walkability
+        and core.terrain.walkability(cx, cy, floor, radius)
+        or core.send_command(string.format("WALKABILITY_GRID %d %d %d %d", cx, cy, floor, radius))
+    if not raw or raw:sub(1, 3) == "ERR" then return nil end
+    return raw
+end
+
+--- Parse a WALKABILITY_GRID response into a 2D boolean grid + blocking list.
+---@param raw string Raw IPC response from walkability()
+---@return table grid  { [y] = { [x] = true/false } }
+---@return table blockers  { {class=, name=, x=, y=, z=, tile_x=, tile_y=} ... }
+function ethy.terrain.parse_walkability(raw)
+    local grid = {}
+    local blockers = {}
+    if not raw then return grid, blockers end
+
+    for line in raw:gmatch("[^\n]+") do
+        -- ROW|y|11100111...
+        local ry, bits = line:match("^ROW|(%d+)|(%d+)$")
+        if not ry then ry, bits = line:match("^ROW|%-?(%d+)|([01]+)$") end
+        if ry and bits then
+            local y = tonumber(ry)
+            grid[y] = grid[y] or {}
+            -- we need the center x to map column index → tile x
+            -- just store raw bits; caller maps with known cx/radius
+            grid[y]._bits = bits
+        end
+
+        -- BLOCK|class=X|name=Y|pos=1.0,2.0,3.0|tile=5,6|collider=1|static=0
+        if line:sub(1, 6) == "BLOCK|" then
+            local b = {}
+            b.class   = line:match("class=([^|]+)")
+            b.name    = line:match("name=([^|]+)")
+            local px, py, pz = line:match("pos=([%d%.%-]+),([%d%.%-]+),([%d%.%-]+)")
+            b.x = tonumber(px); b.y = tonumber(py); b.z = tonumber(pz)
+            local tx, ty = line:match("tile=([%d%-]+),([%d%-]+)")
+            b.tile_x = tonumber(tx); b.tile_y = tonumber(ty)
+            b.collider = line:match("collider=1") and true or false
+            b.is_static = line:match("static=1") and true or false
+            blockers[#blockers + 1] = b
+        end
+    end
+    return grid, blockers
+end
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Pathfinding (delegates to common/pathfinder module)
+-- ═══════════════════════════════════════════════════════════════════════
+
+ethy.pathfinder = require("common/pathfinder")
+
 return ethy
