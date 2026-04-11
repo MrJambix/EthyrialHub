@@ -1,6 +1,6 @@
 # EthyrialHub
 
-Automation toolkit for **Ethyrial: Echoes of Yore**. Native C++ hub with embedded Lua 5.4, ImGui overlay, and a full game-injection toolkit. Includes combat rotations and a scriptable plugin system.
+Native C++ hub with embedded Lua 5.4, ImGui overlay, and a full game-injection toolkit. Includes a scriptable plugin system.
 
 ## DISCORD
 https://discord.gg/thSFuUm3gu
@@ -18,10 +18,8 @@ https://discord.gg/thSFuUm3gu
 | Tab | What It Does |
 |-----|-------------|
 | **Home** | Connection status, player card (HP/MP/target/position) |
-| **Rotation** | Class-specific combat rotations (Enchanter, Ranger, Brawler) |
 | **Plugins** | Load/unload Lua plugins with their own ImGui overlay windows |
 | **Scripts** | Browse and run standalone `.lua` / `.py` scripts |
-| **Dev Tools** | Buff inspector, spell book, entity scanner, move/attack speed hacks, raw IPC console |
 | **Settings** | Tick rates, overlay mode toggle, theme |
 | **Log** | Color-coded, filterable live log of all events |
 
@@ -32,58 +30,14 @@ EthyrialHub/
 ├── EthyrialHub.exe                  <- Main application (run as admin)
 └── dist/
     └── scripts/
-        ├── gather_trees.lua         <- Tree-specific gathering
-        ├── grind_bot.lua            <- Auto-grind with targeting & looting
-        ├── auto_rotation.lua        <- Automatic DPS rotation
-        ├── heal_rotation.lua        <- Automatic heal rotation
-        ├── node_esp.lua             <- Node ESP overlay
         ├── test_connection.lua      <- Connection / API sanity check
-        ├── api_check.lua            <- Full API endpoint test
-        ├── debug_dump.lua           <- Dump game data for debugging
-        ├── dump_brawler_spells.lua  <- Brawler spell data dump
-        ├── live_capture.lua         <- Live data capture to file
-        ├── builds/                  <- Class rotation profiles (.lua)
-        ├── common/                  <- SDK & API libraries (required)
-        ├── examples/                <- Scripting tutorials (01-07)
-        └── gather_loop/             <- Plugin: interactive resource farmer
-            ├── header.lua
-            └── main.lua
 ```
 
 ## Plugins vs Scripts
 
 **Plugins** are folders inside `dist/scripts/` containing `header.lua` + `main.lua`. They run inside the LuaRuntime with full access to ImGui windows, overlay graphics, and callbacks. Loading a plugin with a render callback automatically enables game overlay mode.
 
-**Scripts** are standalone `.lua` or `.py` files. They run in isolated Lua states with pipe-based game access. Good for one-off tasks, dumps, and simpler automation.
-
-## Gather Loop Plugin
-
-The flagship plugin. Go to the **Plugins** tab, click **Load** on `gather_loop`:
-
-- A floating window appears with checkboxes for every ore, tree, herb, and skin node in the game
-- Check what you want, set range/gather wait, press **Start**
-- It scans for matching nodes, walks to the nearest one, gathers it, and repeats
-- Tracks stats (gathered/skipped), pauses when in combat or low HP
-
-## Dev Tools — Speed Hacks
-
-On the **Dev Tools** tab under **Player Mods**:
-
-- **Movement Speed**: Slider from 1-30, Apply Once or Lock (continuous write). Quick presets: Normal (5), Fast (10), Sprint (15), Turbo (25)
-- **Attack Speed**: Slider from 0.1-10, same Apply/Lock controls. Presets: Normal (1.0), Fast (0.5), Rapid (0.2), Instant (0.05)
-- Response feedback shows OK or error (e.g., `NO_PLAYER` if not connected)
-
-## Rotation Profiles
-
-Built-in class rotations on the **Rotation** tab:
-
-| Class | Key Mechanic |
-|-------|-------------|
-| **Enchanter** | Healer/support — Stormbolt filler, shields, Stream of Life |
-| **Ranger** | Spirit Link stacks — SpiritShot generates, SpiritburstArrow spends (4+) |
-| **Brawler** | Martial Combo stacks — generators build stacks, finishers spend them. Can't auto-attack with stacks up |
-
-Select your class (or Auto-Detect), then Start Rotation.
+**Scripts** are standalone `.lua` files. 
 
 ## Writing Your Own Scripts
 
