@@ -76,4 +76,15 @@ function player.get_position()
     return { x = tonumber(x) or 0, y = tonumber(y) or 0, z = tonumber(z) or 0 }
 end
 
+function player.casting()
+    local r = _cmd("PLAYER_CASTING")
+    if not r or r:sub(1, 7) ~= "CASTING" then return nil end
+    local t = { is_casting = true }
+    t.spell    = r:match("spell=([^|]+)") or ""
+    t.duration = tonumber(r:match("duration=([^|]+)")) or 0
+    t.elapsed  = tonumber(r:match("elapsed=([^|]+)")) or 0
+    t.type     = tonumber(r:match("type=([^|]+)")) or 0
+    return t
+end
+
 return player

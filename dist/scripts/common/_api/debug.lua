@@ -23,6 +23,58 @@ function dbg.dump_methods(cls)
     return _cmd("DUMP_METHODS_" .. cls)
 end
 
+--- Dump methods with flags [S,V,A] and native addresses
+function dbg.dump_methods_full(cls)
+    return _cmd("DUMP_METHODS_FULL " .. cls)
+end
+
+--- Get the number of methods on a class
+function dbg.method_count(cls)
+    return tonumber(_cmd("METHOD_COUNT " .. cls)) or 0
+end
+
+--- Get detailed signature for a specific method
+--- @param cls string Class name
+--- @param method string Method name
+--- @param params number|nil Optional param count filter
+--- @return table {name, params, ret, param_types, static, virtual, abstract, addr}
+function dbg.method_signature(cls, method, params)
+    local arg = cls .. " " .. method
+    if params then arg = arg .. " " .. params end
+    local raw = _cmd("METHOD_SIGNATURE " .. arg)
+    if not raw or raw == "" or raw:sub(1, 3) == "ERR" then return nil, raw end
+    return _parse_kv(raw)
+end
+
+--- Get the native address of a method
+function dbg.method_addr(cls, method, params)
+    return _cmd("METHOD_ADDR " .. cls .. " " .. method .. " " .. (params or -1))
+end
+
+--- Search for methods by name pattern across all cached classes
+--- @return table array of "Class.Method(params):RetType" strings
+function dbg.method_search(pattern)
+    local raw = _cmd("METHOD_SEARCH " .. pattern)
+    if not raw or raw == "" or raw:sub(1, 3) == "ERR" or raw:sub(1, 2) == "NO" then return {}, raw end
+    local results = {}
+    for entry in raw:gmatch("[^|]+") do
+        results[#results + 1] = entry
+    end
+    return results, raw
+end
+
+--- Find which classes contain a method with the exact name
+--- @return table array of "ClassName(paramCount)" strings
+function dbg.find_classes_with_method(method_name)
+    local raw = _cmd("SEARCH_CLASSES_BY_METHOD " .. method_name)
+    if not raw or raw == "" or raw:sub(1, 3) == "ERR" or raw:sub(1, 2) == "NO" then return {}, raw end
+    local results = {}
+    for entry in raw:gmatch("[^|]+") do
+        results[#results + 1] = entry
+    end
+    return results, raw
+end
+
 function dbg.dump_offsets()      return _cmd("DUMP_OFFSETS") end
 function dbg.dump_assemblies()   return _cmd("DUMP_ASSEMBLIES") end
 function dbg.dump_singletons()   return _cmd("DUMP_SINGLETONS") end

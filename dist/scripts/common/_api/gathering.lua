@@ -76,8 +76,8 @@ end
 
 function gather.find_water()
     local raw = _cmd("FIND_WATER")
-    if not raw or raw == "" or raw:sub(1, 4) == "ERR:" then
-        return { count = 0, nearest = false, can_touch = false }
+    if not raw or raw == "" or raw:sub(1, 3) == "ERR" then
+        return { count = 0, nearest = false, can_touch = false, raw = raw or "" }
     end
     local t = {}
     t.count     = tonumber(raw:match("count=(%d+)")) or 0
@@ -89,6 +89,14 @@ function gather.find_water()
     t.ptr       = raw:match("ptr=(0x%x+)")
     t.raw       = raw
     return t
+end
+
+function gather.water_search()
+    return _cmd("WATER_SEARCH")
+end
+
+function gather.water_dump()
+    return _cmd("WATER_DUMP")
 end
 
 return gather
