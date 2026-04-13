@@ -87,4 +87,12 @@ function player.casting()
     return t
 end
 
+function player.cooldowns()
+    return _cmd("COOLDOWNS_ALL")
+end
+
+function player.get_cooldowns()
+    return _parse_lines(_cmd("COOLDOWNS_ALL"))
+end
+
 return player

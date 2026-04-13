@@ -50,4 +50,12 @@ function spells.dump_all()
     return _parse_lines(_cmd("SPELL_DUMP"))
 end
 
+function spells.link(name)
+    return _cmd("SPELL_LINK " .. name)
+end
+
+function spells.get_link(name)
+    return _parse_single(_cmd("SPELL_LINK " .. name))
+end
+
 return spells

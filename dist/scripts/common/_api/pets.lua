@@ -42,4 +42,12 @@ function pets.get_full()
     return _parse_single(_cmd("COMPANION_FULL"))
 end
 
+function pets.companion_detail()
+    return _cmd("COMPANION_DETAIL")
+end
+
+function pets.get_companion_detail()
+    return _parse_lines(_cmd("COMPANION_DETAIL"))
+end
+
 return pets

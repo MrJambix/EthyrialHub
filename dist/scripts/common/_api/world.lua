@@ -80,4 +80,32 @@ function world.get_monsterdex_target()
     return list[1]
 end
 
+-- ── Global / Character helpers ──
+
+function world.global_state()
+    return _cmd("GLOBAL_STATE")
+end
+
+function world.get_global_state()
+    return _parse_single(_cmd("GLOBAL_STATE"))
+end
+
+function world.char_list()
+    return _cmd("CHAR_LIST")
+end
+
+function world.get_char_list()
+    return _parse_lines(_cmd("CHAR_LIST"))
+end
+
+function world.quest_detail(name)
+    return _cmd("QUEST_DETAIL " .. name)
+end
+
+function world.get_quest_detail(name)
+    local raw = _cmd("QUEST_DETAIL " .. name)
+    if not raw or raw == "NOT_FOUND" then return nil end
+    return _parse_lines(raw)
+end
+
 return world

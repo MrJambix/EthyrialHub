@@ -33,17 +33,15 @@ local function refresh_inventory()
     end
 
     _inv_cache = {}
-    if conn and conn.send_command then
-        local raw = conn.send_command("INV_ALL")
-        if raw and raw ~= "NONE" and raw ~= "" then
-            for entry in raw:gmatch("[^#]+") do
-                local item = {}
-                for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
-                    item[k] = tonumber(v) or v
-                end
-                if item.name then
-                    _inv_cache[#_inv_cache + 1] = item
-                end
+    local raw = _cmd("INV_ALL")
+    if raw and raw ~= "NONE" and raw ~= "" then
+        for entry in raw:gmatch("[^#]+") do
+            local item = {}
+            for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
+                item[k] = tonumber(v) or v
+            end
+            if item.name then
+                _inv_cache[#_inv_cache + 1] = item
             end
         end
     end
@@ -101,26 +99,17 @@ end
 
 --- Use an item by name.
 function items.use(name)
-    if conn and conn.send_command then
-        return conn.send_command("USE_ITEM " .. name)
-    end
-    return "ERR:NO_CONNECTION"
+    return _cmd("USE_ITEM " .. name)
 end
 
 --- Equip an item by name.
 function items.equip(name)
-    if conn and conn.send_command then
-        return conn.send_command("EQUIP_ITEM " .. name)
-    end
-    return "ERR:NO_CONNECTION"
+    return _cmd("EQUIP_ITEM " .. name)
 end
 
 --- Unequip a slot.
 function items.unequip(slot)
-    if conn and conn.send_command then
-        return conn.send_command("UNEQUIP_SLOT " .. slot)
-    end
-    return "ERR:NO_CONNECTION"
+    return _cmd("UNEQUIP_SLOT " .. slot)
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -167,24 +156,22 @@ end
 
 --- Save the current equipment as a named set.
 function items.save_set(set_name)
-    if conn and conn.send_command then
-        local raw = conn.send_command("EQUIPPED")
-        if raw and raw ~= "NONE" then
-            local equipment = {}
-            for entry in raw:gmatch("[^#]+") do
-                local slot, name
-                for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
-                    if k == "slot" then slot = v
-                    elseif k == "name" then name = v
-                    end
-                end
-                if slot and name then
-                    equipment[slot] = name
+    local raw = _cmd("EQUIPPED")
+    if raw and raw ~= "NONE" then
+        local equipment = {}
+        for entry in raw:gmatch("[^#]+") do
+            local slot, name
+            for k, v in entry:gmatch("([%w_]+)=([^|]+)") do
+                if k == "slot" then slot = v
+                elseif k == "name" then name = v
                 end
             end
-            _equipment_sets[set_name] = equipment
-            return true
+            if slot and name then
+                equipment[slot] = name
+            end
         end
+        _equipment_sets[set_name] = equipment
+        return true
     end
     return false
 end

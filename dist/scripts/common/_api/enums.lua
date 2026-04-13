@@ -49,4 +49,47 @@ enums.power_type = {
     NONE = -1, HEALTH = 0, MANA = 1, FURY = 2, SPIRIT_LINK = 3, FOOD = 4,
 }
 
+-- ── Game enums (matching Layout::Enums in game_class_layout_systems.h) ──
+
+enums.vocation = {
+    NONE = 0,
+    FIGHTER = 1, PROTECTOR = 2, ARCHER = 3, ROGUE = 4,
+    ARCANIST = 5, MYSTIC = 6, BRAWLER = 7, BERSERKER = 8,
+    SPELLBLADE = 9, CRUSADER = 10, PALADIN = 11, WARDEN = 12,
+    SOULWEAVER = 13, GUARDIAN = 14, EARTHGUARD = 15,
+    DRAGONKNIGHT = 16, DEMONKNIGHT = 17,
+    HUNTER = 18, RANGER = 19, DUSKBOW = 20,
+    ASSASSIN = 21, SHADOWBLADE = 22,
+    ELEMENTALIST = 23, SHADOWCASTER = 24, ILLUSIONIST = 25,
+    INFUSER = 26, HEXWEAVER = 27, ENCHANTER = 28,
+    PRIEST = 29, DRUID = 30, CULTIST = 31,
+}
+
+enums.element_type = {
+    NONE = 0, ARCANE = 1, FIRE = 2, WATER = 3, AIR = 4,
+    NATURE = 5, FROST = 6, DIVINE = 7, DEMONIC = 8,
+    LIGHTNING = 9, SHADOW = 10, EARTH = 11,
+    PIERCING = 12, SLASHING = 13, CRUSHING = 14,
+}
+
+enums.damage_type = {
+    NONE = 0, PHYSICAL = 1, MAGIC = 2, PURE = 3, SYSTEM = 4,
+}
+
+enums.game_state = {
+    PLAYING = 0, LOADING = 1,
+}
+
+enums.game_mode = {
+    STANDARD = 0, HARDCORE = 1, IRONMAN = 2,
+    HARDCORE_IRONMAN = 3, ULTIMATE_IRONMAN = 4,
+    GROUP_IRONMAN = 5, DEADMAN = 6, NONE = 7,
+}
+
+enums.entity_type_il2cpp = {
+    NONE = 0, DOODAD = 1, PLAYER = 2, PROJECTILE = 3,
+    ITEM = 4, MONSTER = 5, NPC = 6, WALL = 7,
+    CORPSE = 8, PLACEHOLDER = 9,
+}
+
 return enums
