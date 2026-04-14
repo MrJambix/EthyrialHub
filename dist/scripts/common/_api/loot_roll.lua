@@ -55,4 +55,38 @@ function M.greed_all()
     return _send("NEED_GREED_GREED_ALL")
 end
 
+--- Apply a choice (NEED, GREED, or PASS) to ALL pending rolls atomically.
+---@param choice string  "NEED", "GREED", or "PASS"
+function M.choose_all(choice)
+    return _send("NEED_GREED_CHOOSE_ALL " .. tostring(choice))
+end
+
+--- NEED on all pending rolls.
+function M.need_all()
+    return M.choose_all("NEED")
+end
+
+--- PASS on all pending rolls.
+function M.pass_all()
+    return M.choose_all("PASS")
+end
+
+--- Atomically choose NEED/GREED/PASS for rolls matching an item name substring.
+--- Iterates the live rollQueue on the main thread — no stale pointers.
+---@param choice string  "NEED", "GREED", or "PASS"
+---@param item_match string  Case-insensitive substring to match against item names
+function M.choose_match(choice, item_match)
+    return _send("NEED_GREED_CHOOSE_MATCH " .. tostring(choice) .. " " .. tostring(item_match))
+end
+
+--- Convenience: NEED any roll matching item name substring.
+function M.need_match(item_match)
+    return M.choose_match("NEED", item_match)
+end
+
+--- Convenience: PASS any roll matching item name substring.
+function M.pass_match(item_match)
+    return M.choose_match("PASS", item_match)
+end
+
 return M

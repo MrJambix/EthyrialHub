@@ -35,4 +35,12 @@ function cam.get_parsed()
     }
 end
 
+-- ── Setters ──
+
+function cam.set_distance(d)    return _cmd("SET_CAMERA_DISTANCE " .. tostring(d))  end
+function cam.set_angle(a)       return _cmd("SET_CAMERA_ANGLE " .. tostring(a))      end
+function cam.set_pitch(p)       return _cmd("SET_CAMERA_PITCH " .. tostring(p))      end
+function cam.set_max_distance(d) return _cmd("SET_CAMERA_MAX_DIST " .. tostring(d))  end
+function cam.set_min_distance(d) return _cmd("SET_CAMERA_MIN_DIST " .. tostring(d))  end
+
 return cam

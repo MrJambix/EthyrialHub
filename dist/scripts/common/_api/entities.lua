@@ -40,4 +40,18 @@ function ent.target_by_ptr(ptr)
     return _cmd("TARGET_PTR_" .. _ptr_hex(ptr))
 end
 
+function ent.player_radar()
+    return _cmd("PLAYER_RADAR")
+end
+
+function ent.nearby_players()
+    return _cmd("NEARBY_PLAYERS")
+end
+
+-- ── Parsed helpers ──
+
+function ent.get_player_radar()
+    return _parse_lines(_cmd("PLAYER_RADAR"))
+end
+
 return ent
