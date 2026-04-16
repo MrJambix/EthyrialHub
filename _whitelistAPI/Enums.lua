@@ -1,0 +1,100 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+--  WHITELISTED ADDON API  —  ENUMS & CONSTANTS
+--  Namespace: ethy.*
+--  Category:  Game Constants, Job IDs, Entity Types, Buff Types
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--  Predefined constants for class IDs, spell categories, buff types,
+--  entity classifications, combat states, and group roles.
+--  Use these instead of magic numbers in addon code.
+--
+-- ───────────────────────────────────────────────────────────────────────────
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.job_id.*  —  Player Classes                          │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.job_id.ENCHANTER
+-- ethy.job_id.RANGER
+-- ethy.job_id.ASSASSIN
+-- ethy.job_id.SPELLBLADE
+-- ethy.job_id.EARTHGUARD
+-- ethy.job_id.GUARDIAN
+-- ethy.job_id.ILLUSIONIST
+-- ethy.job_id.DRUID
+-- ethy.job_id.SHADOWCASTER
+-- ethy.job_id.BERSERKER
+-- ethy.job_id.BRAWLER
+-- ethy.job_id.DEMONKNIGHT
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.spell_category.*  —  Spell Types                     │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.spell_category.DAMAGE
+-- ethy.spell_category.AOE
+-- ethy.spell_category.HEAL
+-- ethy.spell_category.SHIELD
+-- ethy.spell_category.BUFF
+-- ethy.spell_category.CC
+-- ethy.spell_category.DOT
+-- ethy.spell_category.CHANNEL
+-- ethy.spell_category.PET
+-- ethy.spell_category.BURST
+-- ethy.spell_category.UTILITY
+-- ethy.spell_category.DEFENSIVE
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.buff_type.*  —  Buff/Debuff Classifications          │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.buff_type.BUFF
+-- ethy.buff_type.DEBUFF
+-- ethy.buff_type.DOT
+-- ethy.buff_type.HOT
+-- ethy.buff_type.SHIELD
+-- ethy.buff_type.PROC
+-- ethy.buff_type.CC
+-- ethy.buff_type.PASSIVE
+-- ethy.buff_type.FOOD
+-- ethy.buff_type.IMMUNITY
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.classification.*  —  Monster Rarity                  │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.classification.NORMAL
+-- ethy.classification.ELITE
+-- ethy.classification.RARE
+-- ethy.classification.BOSS
+-- ethy.classification.CRITTER
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.entity_type.*  —  Entity Types                       │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.entity_type.UNKNOWN
+-- ethy.entity_type.MONSTER
+-- ethy.entity_type.NPC
+-- ethy.entity_type.HOSTILE
+-- ethy.entity_type.PLAYER
+-- ethy.entity_type.PET
+-- ethy.entity_type.COMPANION
+-- ethy.entity_type.CORPSE
+-- ethy.entity_type.GATHER_NODE
+-- ethy.entity_type.SCENE_OBJECT
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.combat_state.*  —  Player/Entity States              │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.combat_state.IDLE
+-- ethy.combat_state.IN_COMBAT
+-- ethy.combat_state.DEAD
+-- ethy.combat_state.FROZEN
+-- ethy.combat_state.RESTING
+-- ethy.combat_state.GATHERING
+-- ethy.combat_state.CASTING
+-- ethy.combat_state.CHANNELING
+-- ethy.combat_state.MOUNTED
+
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  ethy.group_role.*  —  Party Roles                         │
+-- └─────────────────────────────────────────────────────────────┘
+-- ethy.group_role.DPS
+-- ethy.group_role.HEALER
+-- ethy.group_role.TANK
