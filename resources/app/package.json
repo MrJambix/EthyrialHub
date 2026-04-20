@@ -1,0 +1,72 @@
+{
+  "name": "ethyrialhub",
+  "version": "5.0.0",
+  "description": "EthyrialHub — Addon & Tool Manager for Ethyrial Echoes of Yore",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.node.json && electron .\"",
+
+    "build:tsc": "tsc -p tsconfig.node.json",
+    "build:vite": "vite build",
+    "build": "npm run build:tsc && npm run build:vite",
+
+    "build:dll": "powershell -ExecutionPolicy Bypass -File ../build.ps1 -SkipElectron",
+    "build:cpp": "npm run build:dll",
+
+    "deploy:dll": "powershell -Command \"Copy-Item '../EthyTool/x64/Release/EthyTool.dll' './EthyTool.dll' -Force; Copy-Item '../EthyTool/x64/Release/EthyTool.dll' './release/EthyrialHub-win32-x64/EthyTool.dll' -Force\"",
+
+    "pack": "electron-packager . EthyrialHub --platform=win32 --arch=x64 --out=release --overwrite --icon=public/app_icon.ico",
+
+    "repack": "npm run build && npm run deploy:dll && npm run pack",
+    "full": "npm run build:dll && npm run build && npm run deploy:dll && npm run pack",
+
+    "preview": "npm run build && electron .",
+    "package": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-packager": "^17.1.2",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "wait-on": "^8.0.0"
+  },
+  "build": {
+    "appId": "com.ethyrial.hub",
+    "productName": "EthyrialHub",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "public/app_icon.ico",
+        "to": "app_icon.ico"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/app_icon.ico",
+      "signDlls": false
+    }
+  }
+}
